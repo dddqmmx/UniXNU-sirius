@@ -82,7 +82,7 @@ CONFIG_XNU_OWNER_UNION_SYSTEMOS=y
 # (release asset data-seed-256mib, owner-data.cdr 8b77be38...); a differing one is reported.
 CONFIG_XNU_OWNER_DATA_MOUNT=y
 CONFIG_XNU_SIRIUS_DATA_SEED=y
-CONFIG_XNU_OWNER_DATA_VOLUME_UUID="9399864F-4F91-48FB-BE3E-AA0DFD524229"
+CONFIG_XNU_OWNER_DATA_VOLUME_UUID="7F00D031-C00B-4368-A3FF-D4788A1323D6"
 
 # Compile the bsd_init call site of sheng-platform-power.patch so package/SiriusPmgr.cpp can
 # advertise the ApplePMGRNub that AMFI looks for (the target kernelcache stays unmodified).

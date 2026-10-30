@@ -47,6 +47,7 @@ findings = [
   "configs/sirius_defconfig mounts the payload's APFS Data seed at /private/var before launchd (CONFIG_XNU_OWNER_DATA_MOUNT, UUID 9399864F-... of the 256 MiB seed the data-seed workflow built); launchd's own mount -P 1 task exits 66 without it and the exit panics the boot. [payload] size_mib is 512 so the seed and the kernel fit in one vendor volume.",
   "The data-seed workflow builds the seed at the size given as its size_mib input: 32 MiB is the ungrown fixture the reference port mounts, and the 256/8192 MiB values are the grown containers; the seed carries a new volume UUID per build, which NativeEmmc reports when it differs from CONFIG_XNU_OWNER_DATA_VOLUME_UUID.",
   "A 32 MiB seed is the ungrown fixture itself and skips the container grow: the grown 256 MiB container attaches but APFS publishes no volume from it (checkpoint desc/data 0/0, no disk1s1), while the reference port mounts the ungrown 32 MiB seed as disk3s1/OwnerData.",
+  "The seed in use is the ungrown 32 MiB fixture (release asset data-seed-32mib, owner-data.cdr cd3bbd46..., volume 7F00D031-C00B-4368-A3FF-D4788A1323D6); CONFIG_XNU_OWNER_DATA_VOLUME_UUID records it.",
 ]
 completion = [
   "status --json resolves the ARM64, sdm710, iPadOS and device layers, prints a non-empty patch order and shows the device package as kits/sirius.",
