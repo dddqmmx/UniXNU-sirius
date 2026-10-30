@@ -24,7 +24,7 @@ on:
       size_mib:
         description: Data container size in MiB (256 for a RAM seed, 8192 for the persistent container)
         required: true
-        default: "256"
+        default: "32"
   # A push that touches this file also builds the default seed: a dispatch needs a token with the
   # workflow scope, which the build host does not keep, and the seed is the only macOS-only input
   # of this port.
@@ -73,7 +73,7 @@ jobs:
       - name: Seed
         working-directory: unixnu
         env:
-          SIZE_MIB: ${{ inputs.size_mib || '256' }}
+          SIZE_MIB: ${{ inputs.size_mib || '32' }}
         run: |
           mkdir -p out-seed
           python3 scripts/prepare-owner-data-fixture.py
@@ -82,7 +82,10 @@ jobs:
           cp build/owner-data-fixture/seed.json out-seed/
           # Grow the container the way UniXNU's seed-data-grow.py does: extend the raw image,
           # attach it without mounting, resize the APFS container to fill it. The volume and its
-          # UUID stay.
+          # UUID stay. A 32 MiB request is the ungrown fixture itself (the reference port mounts
+          # exactly that), so the grow is skipped: truncating to the same size leaves the UDTO
+          # image that the raw-disk attach below cannot open.
+          if [ "$SIZE_MIB" != "32" ]; then
           python3 -c "import sys; open('out-seed/owner-data.cdr', 'r+b').truncate(int(sys.argv[1]) << 20)" "$SIZE_MIB"
           store=$(hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount -nobrowse out-seed/owner-data.cdr \
             | grep -o '/dev/disk[0-9]*' | head -1 | sed 's#/dev/##')
@@ -95,6 +98,7 @@ jobs:
           )
           diskutil apfs resizeContainer "$container" 0
           hdiutil detach "$store" -force
+          fi
           python3 - "$SIZE_MIB" <<'PY'
           import sys
           header = open('out-seed/owner-data.cdr', 'rb').read(4096)
@@ -121,7 +125,7 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: sirius-data-seed-${{ inputs.size_mib || '256' }}mib
+          name: sirius-data-seed-${{ inputs.size_mib || '32' }}mib
           path: ${{ runner.temp }}/out/*
           if-no-files-found: error
           retention-days: 7
@@ -134,7 +138,7 @@ jobs:
       - name: Publish as a release asset (encrypted)
         env:
           GH_TOKEN: ${{ github.token }}
-          SIZE_MIB: ${{ inputs.size_mib || '256' }}
+          SIZE_MIB: ${{ inputs.size_mib || '32' }}
         run: |
           tag="data-seed-${SIZE_MIB}mib"
           name="sirius-data-seed-${SIZE_MIB}mib.tar.gz.enc"

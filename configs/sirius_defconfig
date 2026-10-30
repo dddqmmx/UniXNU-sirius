@@ -81,6 +81,7 @@ CONFIG_XNU_OWNER_UNION_SYSTEMOS=y
 # boot-manifest requirement in the bring-up mode. The UUID is the current 256 MiB seed's volume
 # (release asset data-seed-256mib, owner-data.cdr 8b77be38...); a differing one is reported.
 CONFIG_XNU_OWNER_DATA_MOUNT=y
+CONFIG_XNU_SIRIUS_DATA_SEED=y
 CONFIG_XNU_OWNER_DATA_VOLUME_UUID="9399864F-4F91-48FB-BE3E-AA0DFD524229"
 
 # Compile the bsd_init call site of sheng-platform-power.patch so package/SiriusPmgr.cpp can

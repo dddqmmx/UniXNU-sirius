@@ -12,7 +12,10 @@
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOPlatformExpert.h>
+#include <IOKit/IODeviceTreeSupport.h>
 #include <pexpert/pexpert.h>
+#include <pexpert/arm64/board_config.h>
+#include <machine/machine_routines.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
 #include <kern/thread.h>
 #include <kern/task.h>
@@ -21,6 +24,8 @@
 #include <sys/types.h>
 
 extern "C" {
+/* osfmk/mach/arm/vm_param.h, which the exported headers do not carry. */
+extern unsigned long gVirtBase, gPhysBase, gPhysSize;
 /* From sirius_emmc.c. prepare() is idempotent and also fills total_blocks from the GPT. */
 int sirius_emmc_prepare(void);
 int sirius_emmc_read_block(unsigned long long lba, void *buffer);
@@ -389,6 +394,8 @@ static NemmcRequest *nemmc_pending_head;
 static NemmcRequest *nemmc_pending_tail;
 static volatile uint32_t nemmc_queue_busy;
 static uint8_t *nemmc_bounce;
+/* The payload's Data seed, published as a RAM window by prepareDataSeed(). */
+static uint64_t nemmc_data_seed_bytes;
 
 /* A dedicated kernel thread drains the queue. The thread call this used to run on is dispatched
  * in interrupt context: the completion, IOMemoryDescriptor::writeBytes() and the transfer itself
@@ -501,9 +508,14 @@ class NativeEmmcBlock : public IOBlockStorageDevice
 	UInt64 fBlocks;
 	IOLock *fLock;
 	uint8_t *fBounce;
+	/* Set for the Data seed: the window is the payload's RAM disk, served by memory copy. */
+	uint8_t *fRam;
 
 public:
 	bool init(UInt64 base, UInt64 blocks);
+	void useRam(uint8_t *ram) { fRam = ram; }
+	uint8_t *ram() const { return fRam; }
+	bool isData() const { return fRam != nullptr; }
 	bool start(IOService *provider) override;
 	void free() override;
 
@@ -515,7 +527,8 @@ public:
 	char *getRevisionString() override { return const_cast<char *>("1.0"); }
 	char *getAdditionalDeviceInfoString() override
 	{
-		return const_cast<char *>("SDCC1 eMMC, read-only, ADMA2");
+		return const_cast<char *>(isData() ? "payload Data seed, RAM, read-write"
+		                                   : "SDCC1 eMMC, read-only, ADMA2");
 	}
 	IOReturn reportBlockSize(UInt64 *value) override
 	{
@@ -547,7 +560,7 @@ public:
 	}
 	IOReturn reportWriteProtection(bool *value) override
 	{
-		*value = true;
+		*value = !isData();
 		return kIOReturnSuccess;
 	}
 	IOReturn doSynchronizeCache() override { return kIOReturnSuccess; }
@@ -582,6 +595,7 @@ NativeEmmcBlock::init(UInt64 base, UInt64 blocks)
 	setProperty("IOMaximumBlockCountRead", 256, sirius_emmc_run_blocks);
 	fBase = base;
 	fBlocks = blocks;
+	fRam = nullptr;
 	fLock = IOLockAlloc();
 	fBounce = (uint8_t *)IOMalloc(EMMC_BLOCK_SIZE);
 	if (!fLock || !fBounce) {
@@ -628,6 +642,25 @@ NativeEmmcBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt
 		emmc_log_dec("NEMMC refuse range count ", count);
 		emmc_log_dec("NEMMC refuse range blocks ", fBlocks);
 		return kIOReturnBadArgument;
+	}
+	if (fRam != nullptr) {
+		/* The Data seed: plain memory copy, both directions. Nothing is written back at power
+		 * off (the RAM disk is not persistent), so writes are accepted and lost with the boot. */
+		if (buffer->getDirection() != kIODirectionIn && buffer->getDirection() != kIODirectionOut) {
+			return kIOReturnBadArgument;
+		}
+		uint8_t *at = fRam + block * EMMC_BLOCK_SIZE;
+		IOReturn result = kIOReturnSuccess;
+		if (buffer->getDirection() == kIODirectionIn) {
+			if (buffer->writeBytes(0, at, count * EMMC_BLOCK_SIZE) != count * EMMC_BLOCK_SIZE) {
+				result = kIOReturnIOError;
+			}
+		} else if (buffer->readBytes(0, at, count * EMMC_BLOCK_SIZE) != count * EMMC_BLOCK_SIZE) {
+			result = kIOReturnIOError;
+		}
+		completion->action(completion->target, completion->parameter, result,
+		    result == kIOReturnSuccess ? count * EMMC_BLOCK_SIZE : 0);
+		return kIOReturnSuccess;
 	}
 	if (buffer->getDirection() != kIODirectionIn) {
 		emmc_log_dec("NEMMC refuse direction ", (uint64_t)buffer->getDirection());
@@ -693,6 +726,7 @@ class NativeEmmc : public IOService
 	char fWindowName[4][33];
 	unsigned fWindows;
 	int prepareWindows(UInt64 blocks);
+	void prepareDataSeed();
 
 public:
 	bool start(IOService *provider) override;
@@ -797,6 +831,55 @@ NativeEmmc::prepareWindows(UInt64 blocks)
 		fWindow[fWindows++] = window;
 	}
 	return (int)fWindows;
+}
+
+/* The Data volume's seed, when the payload carries one (unixnu build payload --data-ramdisk):
+ * DarwinBoot copies it into the kernel window and names it in /chosen/memory-map/RAMDisk
+ * (physical address, size). It becomes a read-write RAM window next to the eMMC ones, APFS
+ * publishes its volume, and the owner Data mount finds that through native_ram_block_volume_seed()
+ * below. Nothing is written back: the volume starts from the seed at every boot. */
+void
+NativeEmmc::prepareDataSeed()
+{
+	IORegistryEntry *map = IORegistryEntry::fromPath("/chosen/memory-map", gIODTPlane);
+	if (map == nullptr) {
+		return;
+	}
+	OSData *range = OSDynamicCast(OSData, map->getProperty("RAMDisk"));
+	uint64_t physical = 0, bytes = 0;
+	if (range != nullptr && range->getLength() == 16) {
+		memcpy(&physical, range->getBytesNoCopy(), 8);
+		memcpy(&bytes, (const uint8_t *)range->getBytesNoCopy() + 8, 8);
+	}
+	map->release();
+	if (bytes == 0) {
+		emmc_log("NEMMC data seed: none in the payload\n");
+		return;
+	}
+	/* Boot memory placed by the loader: it must lie inside the kernel's managed range. */
+	if (bytes > 0x80000000ull || (physical & 4095) != 0 || (bytes & 4095) != 0 || physical < gPhysBase ||
+	    bytes > gPhysSize || physical - gPhysBase > gPhysSize - bytes || fWindows >= 4) {
+		emmc_log_hex("NEMMC data seed: unusable range at ", physical);
+		emmc_log_hex("NEMMC data seed: bytes ", bytes);
+		return;
+	}
+	uint8_t *ram = (uint8_t *)ml_static_ptovirt((vm_offset_t)physical);
+	NativeEmmcBlock *window = new NativeEmmcBlock;
+	if (ram == nullptr || window == nullptr || !window->init(0, bytes / EMMC_BLOCK_SIZE)) {
+		emmc_log("NEMMC data seed: allocation failed\n");
+		return;
+	}
+	window->useRam(ram);
+	if (!window->attach(this)) {
+		emmc_log("NEMMC data seed: attach failed\n");
+		window->release();
+		return;
+	}
+	strlcpy(fWindowName[fWindows], "Data", sizeof(fWindowName[0]));
+	fWindow[fWindows++] = window;
+	nemmc_data_seed_bytes = bytes;
+	emmc_log_hex("NEMMC data seed at ", physical);
+	emmc_log_dec("NEMMC data seed bytes ", bytes);
 }
 
 bool
@@ -906,6 +989,7 @@ NativeEmmc::start(IOService *provider)
 	} else {
 		emmc_log("NEMMC windows: disabled (sirius_emmc_win=1 to publish)\n");
 	}
+	prepareDataSeed();
 	emmc_log("NativeEmmc: step 10 register the driver\n");
 	registerService();
 	emmc_log("NativeEmmc: step 11 done\n");
@@ -935,6 +1019,96 @@ NativeEmmc::stop(IOService *provider)
 	}
 	fWindows = 0;
 	IOService::stop(provider);
+}
+
+/* The owner Data mount (offline-owner-systemos-mount.patch, kern_exec.c built with
+ * XNU_SIRIUS_DATA_SEED) asks for the device of the Data volume and the seed behind it: the single
+ * APFS volume on the RAM window prepareDataSeed() published. Every seed build formats a new volume
+ * with a new UUID, so a volume whose UUID differs from the kernel's (CONFIG_XNU_OWNER_DATA_VOLUME_UUID)
+ * is still taken and the difference is reported, rather than every new seed needing a new kernel.
+ * base is the seed's kernel address; the digest stays zero, as nothing on this board checks it. */
+extern "C" int
+native_ram_block_volume_seed(const char *uuid, dev_t *device, char *path, size_t size, uint64_t *base,
+    uint64_t *bytes, uint8_t *digest)
+{
+	if (uuid == nullptr || device == nullptr || path == nullptr || size < 6 || strlen(uuid) != 36 ||
+	    base == nullptr || bytes == nullptr || digest == nullptr) {
+		return 0;
+	}
+	*base = 0;
+	*bytes = 0;
+	memset(digest, 0, 32);
+	/* APFS publishes the volume when the container is attached, before this mount runs; wait for it. */
+	for (unsigned attempt = 0; attempt < 100; attempt++) {
+		OSDictionary *matching = IOService::serviceMatching("IOMedia");
+		OSIterator *iterator = matching != nullptr ? IOService::getMatchingServices(matching) : nullptr;
+		OSSafeReleaseNULL(matching);
+		unsigned matches = 0;
+		dev_t candidate = (dev_t)0;
+		char candidatePath[64] = {};
+		char candidateVolume[37] = {};
+		uint8_t *ram = nullptr;
+		while (iterator != nullptr) {
+			IOService *media = OSDynamicCast(IOService, iterator->getNextObject());
+			if (media == nullptr) {
+				break;
+			}
+			/* The volume on a RAM window: its provider chain reaches a NativeEmmcBlock with a
+			 * RAM buffer, and the volume (not the whole disk, which APFS also publishes) carries
+			 * the UUID. */
+			uint8_t *under = nullptr;
+			unsigned depth = 0;
+			for (IOService *provider = media; provider != nullptr && depth++ < 64;
+			    provider = provider->getProvider()) {
+				NativeEmmcBlock *block = OSDynamicCast(NativeEmmcBlock, provider);
+				if (block != nullptr) {
+					under = block->ram();
+					break;
+				}
+			}
+			OSString *identity = OSDynamicCast(OSString, media->getProperty("UUID"));
+			if (under == nullptr || identity == nullptr) {
+				continue;
+			}
+			if (++matches != 1) {
+				break;
+			}
+			OSString *name = OSDynamicCast(OSString, media->getProperty("BSD Name"));
+			OSNumber *major = OSDynamicCast(OSNumber, media->getProperty("BSD Major"));
+			OSNumber *minor = OSDynamicCast(OSNumber, media->getProperty("BSD Minor"));
+			if (name == nullptr || major == nullptr || minor == nullptr || name->getLength() == 0 ||
+			    name->getLength() >= sizeof(candidatePath) - 6 || name->getLength() >= size - 6 ||
+			    major->unsigned64BitValue() > 255 || minor->unsigned64BitValue() > 0xffffff) {
+				continue;
+			}
+			candidate = (dev_t)makedev(major->unsigned32BitValue(), minor->unsigned32BitValue());
+			snprintf(candidatePath, sizeof(candidatePath), "/dev/%s", name->getCStringNoCopy());
+			strlcpy(candidateVolume, identity->getCStringNoCopy(), sizeof(candidateVolume));
+			ram = under;
+		}
+		OSSafeReleaseNULL(iterator);
+		if (matches == 1 && candidate != (dev_t)0 && ram != nullptr) {
+			*device = candidate;
+			strlcpy(path, candidatePath, size);
+			*base = (uint64_t)(uintptr_t)ram;
+			/* The window is a RAM disk holding the seed: prepareDataSeed() recorded its size. */
+			*bytes = nemmc_data_seed_bytes;
+			if (strcmp(candidateVolume, uuid) != 0) {
+				emmc_log("NEMMC data volume is ");
+				emmc_log(candidateVolume);
+				emmc_log(", the kernel names ");
+				emmc_log(uuid);
+				emmc_log("\n");
+			}
+			emmc_log("NEMMC data volume ");
+			emmc_log(path);
+			emmc_log("\n");
+			return 1;
+		}
+		IOSleep(100);
+	}
+	emmc_log("NEMMC data volume: no RAM volume published\n");
+	return 0;
 }
 
 /* The GPU addon in the payload (scripts/make-gpu-addon.py) is installed by kern_exec.c through
