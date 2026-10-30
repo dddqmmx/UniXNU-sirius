@@ -1,6 +1,12 @@
 # UniXNU on Xiaomi Mi 8 SE (sirius) — 交接文档
 
-更新：2026-10-25。本文档交接"把 UniXNU（XNU 内核 + iPadOS 用户态）移植到小米 8 SE"的全部上下文：当前进度、架构决策、构建/部署循环、已解决的问题、下一步路线。
+更新：2026-10-30。
+
+> **接手的 agent 先读 [`HANDOFF-AGENT.md`](HANDOFF-AGENT.md)**：里面是这台机器上构建环境怎么恢复、
+> 本轮做到哪（PAN、SystemOS 联合挂载、eMMC 50 MHz、Data seed）、下一步是什么，以及
+> 「全自动调试环路」（结论 → fastboot → 刷写 → 抓串口 → 判定，无需人手按键）的设计任务。
+
+本文档交接"把 UniXNU（XNU 内核 + iPadOS 用户态）移植到小米 8 SE"的全部上下文：当前进度、架构决策、构建/部署循环、已解决的问题、下一步路线。
 
 ---
 
