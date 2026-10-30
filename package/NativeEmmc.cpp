@@ -16,11 +16,16 @@
 #include <IOKit/storage/IOBlockStorageDevice.h>
 #include <kern/thread.h>
 #include <kern/sched_prim.h>
+#include <sys/types.h>
 
 extern "C" {
 /* From sirius_emmc.c. prepare() is idempotent and also fills total_blocks from the GPT. */
 int sirius_emmc_prepare(void);
 int sirius_emmc_read_block(unsigned long long lba, void *buffer);
+/* Up to sirius_emmc_run_blocks blocks in one call: one CMD18 with Auto-CMD12 when runs work,
+ * single blocks otherwise. */
+int sirius_emmc_read_blocks(unsigned long long lba, unsigned count, void *buffer);
+extern const unsigned sirius_emmc_run_blocks;
 extern unsigned long long sirius_emmc_total_blocks;
 }
 
@@ -163,11 +168,13 @@ sirius_user_thread_probe(void)
 static unsigned int nemmc_stack_dumps;
 
 /* PSTATE.PAN is set on every exception entry when SCTLR_EL1.SPAN is set, and a set PAN makes
- * every privileged access to a user page fault. This kernel is built with CONFIG_XNU_NATIVE_PAN=n,
- * so copyio.c's user_access_enable()/disable() are empty and nothing would ever clear it, which
- * turns the first kernel write into the init process's map into a fault that the fast fault path
- * resolves and immediately takes again. Clear it once, guarded by the feature check: on cores
- * without PAN the instruction is undefined. */
+ * every privileged access to a user page fault. The kernel is built with
+ * CONFIG_XNU_NATIVE_PAN=y, so copyio.c's user_access_enable()/disable() clear it around every
+ * copyin/copyout and around the bulk single reads. The clear is per thread, so a boot argument
+ * that left it on, or a path that writes a user address without going through copyio, would
+ * still fault in a loop; the report below says what the driver's own thread sees, and the
+ * clear is only kept for a kernel built without the PAN support (where nothing else clears it).
+ * Both are guarded by the feature check: on a core without PAN the instruction is undefined. */
 static int
 nemmc_pan_implemented(void)
 {
@@ -189,10 +196,12 @@ nemmc_report_pan(void)
 	/* PSTATE.PAN as a system register (S3_0_C4_C2_3): clang's named form does not accept it. */
 	pan = (uint64_t)__builtin_arm_rsr("S3_0_C4_C2_3");
 	emmc_log_dec("NEMMC pan before ", pan);
+#if !defined(XNU_NATIVE_PAN) || !XNU_NATIVE_PAN
 	if (pan != 0) {
 		__builtin_arm_wsr("S3_0_C4_C2_3", 0);
 		emmc_log_dec("NEMMC pan after ", (uint64_t)__builtin_arm_rsr("S3_0_C4_C2_3"));
 	}
+#endif
 }
 
 static void
@@ -416,24 +425,37 @@ nemmc_drain_queue(void)
 			return;
 		}
 		IOReturn result = kIOReturnSuccess;
-		for (UInt64 i = 0; i < request->count; i++) {
+		/* In runs of up to sirius_emmc_run_blocks: each run is one multi-block command, where a
+		 * block at a time was one command per 512 bytes at the identification clock. The bounce
+		 * buffer is shared by every request and requests are drained on their callers' threads,
+		 * so it stays under the transport lock until the copy into the request's memory is done
+		 * (released in between, a second reader refilled it first and the first request received
+		 * the other one's blocks). */
+		for (UInt64 done = 0; done < request->count;) {
+			UInt64 run = request->count - done;
+			if (run > sirius_emmc_run_blocks) {
+				run = sirius_emmc_run_blocks;
+			}
+			UInt64 lba = request->base + request->block + done;
 			nemmc_transport_lock_acquire();
-			nemmc_inflight_lba = request->base + request->block + i;
+			nemmc_inflight_lba = lba;
 			nemmc_inflight_count = (uint32_t)request->count;
 			nemmc_inflight_beat = nemmc_heartbeats;
-			int read = sirius_emmc_read_block(request->base + request->block + i, nemmc_bounce);
+			int read = sirius_emmc_read_blocks(lba, (unsigned)run, nemmc_bounce);
+			UInt64 copied = read == 0 ? request->buffer->writeBytes(done * EMMC_BLOCK_SIZE,
+			    nemmc_bounce, run * EMMC_BLOCK_SIZE) : 0;
 			nemmc_transport_lock_release();
-			nemmc_blocks++;
+			nemmc_blocks += (uint32_t)run;
 			if (read != 0) {
-				emmc_log_hex("NEMMC transfer failed lba ", request->base + request->block + i);
+				emmc_log_hex("NEMMC transfer failed lba ", lba);
 				result = kIOReturnIOError;
 				break;
 			}
-			if (request->buffer->writeBytes(i * EMMC_BLOCK_SIZE, nemmc_bounce,
-			    EMMC_BLOCK_SIZE) != EMMC_BLOCK_SIZE) {
+			if (copied != run * EMMC_BLOCK_SIZE) {
 				result = kIOReturnIOError;
 				break;
 			}
+			done += run;
 		}
 		nemmc_inflight_lba = 0;
 		nemmc_inflight_count = 0;
@@ -555,7 +577,7 @@ NativeEmmcBlock::init(UInt64 base, UInt64 blocks)
 	/* One request is one run of single-block CMD17 reads at the card's current clock, tens of
 	 * milliseconds per block; without this cap IOStorageFamily hands over a whole megabyte at
 	 * once and the drain is busy with that single request for minutes. */
-	setProperty("IOMaximumBlockCountRead", 64, 64);
+	setProperty("IOMaximumBlockCountRead", 256, sirius_emmc_run_blocks);
 	fBase = base;
 	fBlocks = blocks;
 	fLock = IOLockAlloc();
@@ -911,6 +933,95 @@ NativeEmmc::stop(IOService *provider)
 	}
 	fWindows = 0;
 	IOService::stop(provider);
+}
+
+/* The owner SystemOS mount in kern_exec.c (offline-owner-systemos-mount.patch, built here with
+ * XNU_BRINGUP_OWNER_CACHE) mounts the SystemOS cryptex as a union over / before launchd starts, so
+ * dyld finds its shared cache; without it shared_region_check_np returns ENOMEM and dyld stops.
+ * The mount asks the block driver to authorize the root and to name the device of the SystemOS
+ * volume. These eMMC windows have no owner policy, so both answers are only given with the
+ * explicit boot argument sirius-allow-unverified=1, as the uke port does for its UFS root. */
+static int
+nemmc_allow_unverified(void)
+{
+	static int answer = -1;
+	unsigned allow = 0;
+
+	if (answer < 0) {
+		answer = PE_parse_boot_argn("sirius-allow-unverified", &allow, sizeof(allow)) && allow == 1;
+	}
+	return answer;
+}
+
+extern "C" int
+native_verified_block_root_authorized(dev_t device)
+{
+	(void)device;
+	return nemmc_allow_unverified();
+}
+
+/* The IOMedia whose UUID is uuid, once APFS has published it: its BSD device and node. APFS
+ * publishes volume media when the container is attached, and the mount runs before launchd, so
+ * this waits up to ten seconds for the volume to appear. */
+extern "C" int
+native_verified_block_volume_device(const char *uuid, dev_t *device, char *path, size_t size)
+{
+	if (uuid == nullptr || device == nullptr || path == nullptr || size < 6 || strlen(uuid) != 36) {
+		return 0;
+	}
+	*device = (dev_t)0;
+	path[0] = '\0';
+	if (!nemmc_allow_unverified()) {
+		emmc_log("NEMMC owner volume refused: no sirius-allow-unverified\n");
+		return 0;
+	}
+	for (unsigned attempt = 0; attempt < 100; attempt++) {
+		OSDictionary *matching = IOService::serviceMatching("IOMedia");
+		OSDictionary *properties = OSDictionary::withCapacity(1);
+		OSString *wanted = OSString::withCString(uuid);
+		bool ready = matching != nullptr && properties != nullptr && wanted != nullptr &&
+		    properties->setObject("UUID", wanted) && matching->setObject("IOPropertyMatch", properties);
+		OSSafeReleaseNULL(wanted);
+		OSSafeReleaseNULL(properties);
+		OSIterator *iterator = ready ? IOService::getMatchingServices(matching) : nullptr;
+		OSSafeReleaseNULL(matching);
+		dev_t candidate = (dev_t)0;
+		char candidatePath[64] = {};
+		unsigned matches = 0;
+		while (iterator != nullptr) {
+			IOService *media = OSDynamicCast(IOService, iterator->getNextObject());
+			if (media == nullptr) {
+				break;
+			}
+			if (++matches != 1) {
+				break;
+			}
+			OSString *identity = OSDynamicCast(OSString, media->getProperty("UUID"));
+			OSString *name = OSDynamicCast(OSString, media->getProperty("BSD Name"));
+			OSNumber *major = OSDynamicCast(OSNumber, media->getProperty("BSD Major"));
+			OSNumber *minor = OSDynamicCast(OSNumber, media->getProperty("BSD Minor"));
+			if (identity == nullptr || strcmp(identity->getCStringNoCopy(), uuid) || name == nullptr ||
+			    major == nullptr || minor == nullptr || name->getLength() == 0 ||
+			    name->getLength() >= sizeof(candidatePath) - 6 || name->getLength() >= size - 6 ||
+			    major->unsigned64BitValue() > 255 || minor->unsigned64BitValue() > 0xffffff) {
+				continue;
+			}
+			candidate = (dev_t)makedev(major->unsigned32BitValue(), minor->unsigned32BitValue());
+			snprintf(candidatePath, sizeof(candidatePath), "/dev/%s", name->getCStringNoCopy());
+		}
+		OSSafeReleaseNULL(iterator);
+		if (matches == 1 && candidate != (dev_t)0) {
+			*device = candidate;
+			strlcpy(path, candidatePath, size);
+			emmc_log("NEMMC owner volume ");
+			emmc_log(path);
+			emmc_log("\n");
+			return 1;
+		}
+		IOSleep(100);
+	}
+	emmc_log("NEMMC owner volume not found\n");
+	return 0;
 }
 
 /* Entry point of bsd_init (patches/xnu/sirius-usb-console.patch). No personality is installed:

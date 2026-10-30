@@ -109,16 +109,33 @@ kernel_args = [
   "armcpu-timer-intid=19",          # SDM670/710 virtual timer is GIC PPI 3 (INTID 19), not the architectural PPI 27
   "sheng-pmgr=2",                   # publish an ApplePMGRNub for the unchanged AMFI (kits/sirius/SiriusPmgr.cpp)
   "sirius_usb=2",                   # CDC-ACM log console over DWC3 (patches/xnu/sirius-usb-console.patch)
-  "sirius_emmc_hs=1",              # 25 MHz card clock instead of the 400 kHz identification rate
+  "sirius_emmc_hs=3",              # card clock ladder: 1 = 25 MHz, 2 = up to 50, 3 = up to 100; each step
+                                    # is proven against blocks read at the 400 kHz identification rate and
+                                    # a failure falls back to the last one that read back correctly
   "sirius_emmc_win=1",              # publish the SHNGROOT windows of [userdata] as block devices
   "launchdsuffix=release",          # DEVELOPMENT: load /sbin/launchd directly and report its errno
   "amfi_get_out_of_my_way=1",       # bring-up: let init exec from an unverified root
+  "sirius-allow-unverified=1",      # bring-up: NativeEmmc authorizes the SystemOS union mount
+                                    # (the eMMC windows have no owner policy)
   "sirius-skip-rootauth=1",         # the sealed-root answer needs the owner-root chain; see
                                     # patches/xnu/sirius-skip-rootauth.patch
+  "sheng-disable-watchdogd=1",      # package/BootWatchdogPolicy.c disables com.apple.watchdogd before
+                                    # launchd: it traps (brk #1) without a watchdog backend and its
+                                    # exit panics the boot
+  "sheng-lite=1",                   # the same policy disables the network/iCloud/photo daemons this
+                                    # phone has no use for; they compete with the boot for memory
   # "sirius_usb_power=1",           # opt-in: power the USB GDSC and report the readback (proven safe).
   #                                 # 2/3/4 additionally touch the branch clocks; on SDM710 that stalls the
   #                                 # bus and reboots the phone unless the clock sources are programmed first.
 ]
+
+# launchd's first boot task, `mount -P 1`, exits 66 without /chosen/boot-manifest-hash ("failed to
+# get boot-manifest-hash"): it names /private/preboot/<hash> from it. There is no Apple
+# personalization manifest here, so this is an explicit bring-up boot-set identity, not Apple data:
+# the uke port's SHA-384 of "UkeBringup.BootSet.v1\0", the value asteroids and the legacy sirius
+# port boot past mount-phase-1 with.
+[adt.chosen.bytes]
+boot-manifest-hash = "5fd2fc139b688ddf071aa815c1ea75d26bcd994a528cf02e365661eab5139ec7b580d63ca9319e218962a2236f23faca"
 
 # The platform identity seed (--unique-chip-id) is not stored in any repository; the first boot
 # needs no seed, and chip_id is only used together with one.

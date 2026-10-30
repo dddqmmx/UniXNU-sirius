@@ -1,0 +1,127 @@
+name: Data seed
+
+# The Data volume's seed for the payload (unixnu build payload --data-ramdisk): the kernel mounts
+# it at /private/var before launchd starts, and launchd's first boot task cannot run without it.
+# Every step needs macOS hdiutil/diskutil (UniXNU's prepare-owner-data-fixture.py), so the seed is
+# built here on a hosted macOS runner rather than on the Linux build host.
+#
+#   size_mib 256 -> a small RAM seed for --data-ramdisk (held in the kernel's memory window)
+#   size_mib 8192 -> the persistent Data container written into userdata behind the root image
+#
+# The workflow prints the new volume's UUID (::notice::); NativeEmmc takes the volume on its Data
+# window whatever the UUID, and configs/sirius_defconfig records it. The seed holds files from the
+# IPSW, so the artifact is uploaded encrypted when ARTIFACT_PASSPHRASE is set (and plain otherwise,
+# which is only safe on a private repository):
+#   openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in data-seed.tar.gz.enc -pass file:KEYFILE | tar xz
+
+on:
+  workflow_dispatch:
+    inputs:
+      unixnu_ref:
+        description: UniXNU ref (seed scripts)
+        required: true
+        default: main
+      size_mib:
+        description: Data container size in MiB (256 for a RAM seed, 8192 for the persistent container)
+        required: true
+        default: "256"
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check out UniXNU
+        uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: ${{ inputs.unixnu_ref }}
+          path: unixnu
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: The IPSW's OS volume, mounted read-only
+        working-directory: unixnu
+        run: |
+          url=$(python3 -c "import tomllib; print(tomllib.load(open('profiles/os/ipados-17.7.11-21H461/profile.toml', 'rb'))['ipsw']['url'])")
+          mkdir -p refer
+          curl -fsSL --retry 3 -o refer/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw "$url"
+          python3 scripts/extract-target-volume.py OS
+          rm refer/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw
+          dmg=$(ls .cache/firmware/target-volumes/*.dmg)
+          mkdir -p .cache/firmware/target-volumes/os-mount
+          hdiutil attach -readonly -nobrowse -owners off -mountpoint .cache/firmware/target-volumes/os-mount "$dmg"
+
+      - name: Seed
+        working-directory: unixnu
+        env:
+          SIZE_MIB: ${{ inputs.size_mib }}
+        run: |
+          mkdir -p out-seed
+          python3 scripts/prepare-owner-data-fixture.py
+          hdiutil detach .cache/firmware/target-volumes/os-mount
+          cp build/owner-data-fixture/owner-data-32.cdr out-seed/owner-data.cdr
+          cp build/owner-data-fixture/seed.json out-seed/
+          # Grow the container the way UniXNU's seed-data-grow.py does: extend the raw image,
+          # attach it without mounting, resize the APFS container to fill it. The volume and its
+          # UUID stay.
+          python3 -c "import sys; open('out-seed/owner-data.cdr', 'r+b').truncate(int(sys.argv[1]) << 20)" "$SIZE_MIB"
+          store=$(hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount -nobrowse out-seed/owner-data.cdr \
+            | grep -o '/dev/disk[0-9]*' | head -1 | sed 's#/dev/##')
+          container=$(python3 - "$store" <<'PY'
+          import plistlib, subprocess, sys
+          listing = plistlib.loads(subprocess.check_output(['diskutil', 'apfs', 'list', '-plist']))
+          print(next(c['ContainerReference'] for c in listing['Containers']
+                     if any(s['DeviceIdentifier'] == sys.argv[1] for s in c.get('PhysicalStores', []))))
+          PY
+          )
+          diskutil apfs resizeContainer "$container" 0
+          hdiutil detach "$store" -force
+          python3 - "$SIZE_MIB" <<'PY'
+          import sys
+          header = open('out-seed/owner-data.cdr', 'rb').read(4096)
+          blocks = int.from_bytes(header[40:48], 'little')
+          if header[32:36] != b'NXSB' or blocks * 4096 < (int(sys.argv[1]) - 64) * 2**20:
+              sys.exit(f'grown container holds {blocks * 4096} bytes')
+          print('container bytes', blocks * 4096)
+          PY
+          uuid=$(python3 -c "import json; print(json.load(open('out-seed/seed.json'))['volume_uuid'])")
+          {
+            echo "size_mib $SIZE_MIB"
+            echo "volume_uuid $uuid"
+            shasum -a 256 out-seed/owner-data.cdr
+          } | tee out-seed/inputs.txt
+          ls -la out-seed
+          echo "::notice title=Data volume UUID::CONFIG_XNU_OWNER_DATA_VOLUME_UUID=\"$uuid\""
+
+      - name: Pack (and encrypt when a passphrase is configured)
+        env:
+          ARTIFACT_PASSPHRASE: ${{ secrets.ARTIFACT_PASSPHRASE }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          if [ -n "$ARTIFACT_PASSPHRASE" ]; then
+            tar -C unixnu/out-seed -czf - . \
+              | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_PASSPHRASE \
+                -out "$RUNNER_TEMP/out/data-seed.tar.gz.enc"
+          else
+            tar -C unixnu/out-seed -czf "$RUNNER_TEMP/out/data-seed.tar.gz" .
+          fi
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: sirius-data-seed-${{ inputs.size_mib }}mib
+          path: ${{ runner.temp }}/out/*
+          if-no-files-found: error
+          retention-days: 7

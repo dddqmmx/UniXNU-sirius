@@ -109,9 +109,15 @@ if compiled.returncode:
     raise SystemExit((compiled.stdout + compiled.stderr)[-4000:])
 
 # A warm tree still has the kernelcache, so the record is proved against it here; a cold tree
-# (CI) reaches the prelink afterwards and the workflow checks it there.
+# (CI) reaches the prelink afterwards and the workflow checks it there. The prelink plan
+# (kernel/kernel.json) only exists after a prelink, so the first build of a tree that already
+# has an IPSW checks the addresses against the record's own slide; the prelink then proves that
+# slide again.
 if sorted(ROOT.parents[3].glob('ipsw/*/kernelcache.decompressed')):
-    check = subprocess.run(['python3', str(ROOT / 'scripts/derive-storage-bindings.py'), '--check'],
+    check_command = ['python3', str(ROOT / 'scripts/derive-storage-bindings.py'), '--check']
+    if not (ROOT.parent / 'kernel/kernel.json').is_file():
+        check_command.append(f"--slide={bindings['slide']:#x}")
+    check = subprocess.run(check_command,
                            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     (OUT / 'derive-check.log').write_text(check.stdout)
     if check.returncode:
