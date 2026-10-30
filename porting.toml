@@ -42,6 +42,8 @@ findings = [
   "Format 2 replaced the hand-written ADT generator of the legacy port (scripts/make-sirius-adt.py) with a board DTS: the payload step compiles the tree and derives kernel.macho.adt from it.",
   "The arm-io base is derived from the exported nodes, not written by hand: the GIC at 0x17a00000 makes the window start at 0x17000000, which XNU reads as the SoC base.",
   "The legacy port set ipad_identity = true; in format 2 the same identity is the OS profile's [adt] tables, so the board only states its deviations.",
+  "configs/sirius_defconfig keeps the ARM64 profile's CONFIG_XNU_NATIVE_PAN=y: Kryo 360 implements PSTATE.PAN, the kernel leaves SCTLR_EL1.SPAN clear, so every exception entry from EL0 sets PAN and only the PAN build's copyio clears it; with the flag off the pid 1 exec loops in copyout() of the launchd path (tens of millions of faults, each resolved by vm_fault and taken again).",
+  "The Data volume needs an APFS seed built with macOS hdiutil/diskutil (UniXNU's prepare-owner-data-fixture.py), so .github/workflows/data-seed.yml builds it on a hosted macOS runner: 256 MiB for a RAM seed, 8192 MiB for the persistent container.",
 ]
 completion = [
   "status --json resolves the ARM64, sdm710, iPadOS and device layers, prints a non-empty patch order and shows the device package as kits/sirius.",
@@ -171,7 +173,7 @@ evidence = [
 id = "storage"
 status = "device-verified"
 components = []
-paths = ["docs/HANDOFF.zh-CN.md", "package/sirius_emmc.c", "package/NativeEmmc.cpp", "scripts/derive-storage-bindings.py"]
+paths = ["docs/HANDOFF.zh-CN.md", "package/sirius_emmc.c", "package/NativeEmmc.cpp", "scripts/derive-storage-bindings.py", "scripts/build-native-emmc.py"]
 inputs = [
   "The reference unit is eMMC, not UFS: the UFS transport and its sheng integration points do not apply to this board.",
   "The original kernelcache is the only source of IOStorageFamily's addresses; its kext images carry no symbol table, so they are derived from the dispatch table itself.",
@@ -203,6 +205,7 @@ findings = [
   "Throughput at the identification clock is about 550 blocks/s (0x3FC to 0x84A in two seconds), the expected ceiling for 400 kHz on a four-bit bus, so the 400 kHz setting is a speed problem and not the cause of the stalls.",
   "The init exec returns 0 and then nothing asks the driver for another block: reads stop at 0x10D (269 requests, 0x98F blocks) while the heartbeat keeps counting, so the wait is past the storage stack. The caller side is now instrumented (sirius-post-exec-trace.patch): the exec thread-switch state, every new user thread start at thread_bootstrap_return, the first pid 1 syscalls with their returns, each bsd_ast for pid 1 and the first user faults after the exec, all written to the same USB ring and summarised by the heartbeat.",
   "The caller-side probe closes that question: the pid 1 thread stays in load_init_program_at_path, inside copyout() of the launchd path, and takes 62.6 million faults in about a minute. The stall is a fault loop in the exec path, not a storage wait.",
+  "The eMMC driver reads in runs and climbs the card clock (see diagnostics); the eMMC windows are authorized for the SystemOS union mount by package/NativeEmmc.cpp's native_verified_block_* hooks, only under sirius-allow-unverified=1.",
 ]
 completion = [
   "The eMMC registers, GPT and the SHNGROOT windows are correct; APFS mounts the OS volume, bsd_init completes, init execs /sbin/launchd and execve returns 0.",
@@ -440,6 +443,7 @@ findings = [
   "The next blocker is AMFI: 'AMFI: No PMGR?' @ConfigurationSettings.cpp:235. The unchanged target AMFI finds the PMGR through IOService::serviceMatching(\"ApplePMGRNub\") + waitForMatchingService, then reads the provider at nub+0x88 and calls its readAon/writeAon slots (OR bit 2). The original classes are ApplePMGR (storage 0x4b8a8) and ApplePMGRNub (0x740); UniXNU/scripts/audit-amfi-pmgr-contract.py pins the exact instructions. amfi_get_out_of_my_way=1 does not skip the check. Two routes remain: instantiate the original classes the way UniXNU-sheng does (OSKextLoadKextWithIdentifier + a generated OriginalPMGRABI.h + a published nub), or patch the AMFI block in the prelinked kernel.",
   "AMFI is cleared without touching the target kernel: the nub helpers behind AMFI's readAon/writeAon return 0 when the provider stored at nub+0x88 is NULL, so publishing a real but provider-less ApplePMGRNub satisfies the latch (read 0, OR 4, write no-op). package/SiriusPmgr.cpp allocates the class through OSMetaClass::getMetaClassWithName + alloc + init, attaches it to the platform and registers it from the sheng_pmgr_run hook in bsd_init (CONFIG_XNU_SHENG_PMGR=1, sheng-pmgr=2), and its build script writes the archive to build/sheng-platform-power/libShengPlatformPower.a because build-xnu-4k-baseline.sh force-loads exactly that path.",
   "With AMFI satisfied the boot passes bsd_init and stops at 'Failed to mount root device' @IOKitBSDInit.cpp:984 with 8 CPUs, IRQ=2145, 61 s of live uptime: the kernel now runs to the point where it needs a storage driver and a root filesystem, which this board does not have yet (no UFS or VirtIO block component, no APFS container on the payload volume).",
+  "scripts/build-xnu-4k-baseline.sh also builds the owner SystemOS union mount in its bring-up mode (XNU_BRINGUP_OWNER_CACHE): the board has no owner root chain yet, and the eMMC windows authorize the mount only under sirius-allow-unverified=1. The same script's Data mount switch accepts the bring-up mode, so the Data seed the macOS runner builds can be mounted at /private/var.",
 ]
 completion = [
   "The kernel prelinks against the pinned 21H461 kernelcache, the payload contains the kernel, the ADT and the DarwinBoot driver, and the flashed volume boots from U-Boot.",
@@ -486,6 +490,7 @@ findings = [
   "The loop is not limited to the copyout: with the trust-cache bundle back in the payload the exec completes (execve activate 0, AMFI answers nothing) and the exec'd thread enters userland at pc 0x100924e50, where it takes 92 million instruction aborts in about a minute on three addresses (ESR 0x82000007, level-3 translation faults) without ever issuing a syscall or a single block read; the entry point is right, the code pages are simply not visible to the CPU.",
   "Both loops have the same shape: vm_fault opens the page in thread->map's pmap and returns KERN_SUCCESS, while the CPU keeps taking the fault. AT S1E1W and pmap_find_phys disagree about the physical page behind 0x1000, which points at the CPU running with a pmap that is not the thread's after the exec task switch.",
   "A payload built without --trust-cache leaves the ring reporting no external trust caches found and AMFI kills launchd with namespace 9 (OS_REASON_EXEC) code 8; the same kernel with the bundle present reaches execve activate 0 without an exec-policy line, so that panic is a build-argument slip, not a regression.",
+  "The eMMC driver reads in runs (one CMD18 with Auto-CMD12 for up to 256 blocks, the buffer described piece by piece in an ADMA2 table) and climbs the card clock one proven step at a time (sirius_emmc_hs=3: 25, 50, 100 MHz), each step verified against blocks read at the 400 kHz identification rate; the single-block path stays as the fallback the runs were proven against.",
 ]
 completion = [
   "Each claimed milestone has a reproducible command, a matching source and image revision and an accessible result.",
