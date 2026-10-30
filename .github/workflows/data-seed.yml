@@ -34,7 +34,7 @@ on:
       - ".github/workflows/data-seed.yml"
 
 permissions:
-  contents: read
+  contents: write   # the seed is published as an encrypted release asset (see below)
 
 jobs:
   seed:
@@ -112,18 +112,11 @@ jobs:
           ls -la out-seed
           echo "::notice title=Data volume UUID::CONFIG_XNU_OWNER_DATA_VOLUME_UUID=\"$uuid\""
 
-      - name: Pack (and encrypt when a passphrase is configured)
-        env:
-          ARTIFACT_PASSPHRASE: ${{ secrets.ARTIFACT_PASSPHRASE }}
+      - name: Pack
         run: |
           mkdir -p "$RUNNER_TEMP/out"
-          if [ -n "$ARTIFACT_PASSPHRASE" ]; then
-            tar -C unixnu/out-seed -czf - . \
-              | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_PASSPHRASE \
-                -out "$RUNNER_TEMP/out/data-seed.tar.gz.enc"
-          else
-            tar -C unixnu/out-seed -czf "$RUNNER_TEMP/out/data-seed.tar.gz" .
-          fi
+          tar -C unixnu/out-seed -czf "$RUNNER_TEMP/out/data-seed.tar.gz" .
+          ls -la "$RUNNER_TEMP/out"
 
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -132,3 +125,30 @@ jobs:
           path: ${{ runner.temp }}/out/*
           if-no-files-found: error
           retention-days: 7
+
+      # The build host has no GitHub token, and an artifact download needs authentication even on
+      # a public repository. A release asset is readable without one, so the seed is published
+      # there as well -- always encrypted, because it holds files from the IPSW. The passphrase is
+      # fixed for the bring-up seed: it keeps the Apple content out of plain sight, it is not a
+      # secret. Tag and asset name carry the size.
+      - name: Publish as a release asset (encrypted)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIZE_MIB: ${{ inputs.size_mib || '256' }}
+        run: |
+          tag="data-seed-${SIZE_MIB}mib"
+          name="sirius-data-seed-${SIZE_MIB}mib.tar.gz.enc"
+          # The build host has no GitHub token, and an artifact download needs authentication even
+          # on a public repository; a release asset is readable without one. The archive always
+          # travels encrypted and the passphrase is fixed for the bring-up seed: it keeps the Apple
+          # content out of plain sight, it is not a secret. Keep this repository private if the
+          # content must not be redistributed at all -- or take the artifact from the run page.
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass pass:unixnu-sirius-bringup \
+            -in "$RUNNER_TEMP/out/data-seed.tar.gz" -out "$RUNNER_TEMP/out/$name"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$RUNNER_TEMP/out/$name" --clobber
+          else
+            gh release create "$tag" "$RUNNER_TEMP/out/$name" \
+              --title "Data seed ${SIZE_MIB} MiB" \
+              --notes "APFS Data seed for the sirius payload. Decrypt with: openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass pass:unixnu-sirius-bringup -in $name | tar xz"
+          fi

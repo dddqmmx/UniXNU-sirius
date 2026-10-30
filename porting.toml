@@ -43,7 +43,7 @@ findings = [
   "The arm-io base is derived from the exported nodes, not written by hand: the GIC at 0x17a00000 makes the window start at 0x17000000, which XNU reads as the SoC base.",
   "The legacy port set ipad_identity = true; in format 2 the same identity is the OS profile's [adt] tables, so the board only states its deviations.",
   "configs/sirius_defconfig keeps the ARM64 profile's CONFIG_XNU_NATIVE_PAN=y: Kryo 360 implements PSTATE.PAN, the kernel leaves SCTLR_EL1.SPAN clear, so every exception entry from EL0 sets PAN and only the PAN build's copyio clears it; with the flag off the pid 1 exec loops in copyout() of the launchd path (tens of millions of faults, each resolved by vm_fault and taken again).",
-  "The Data volume needs an APFS seed built with macOS hdiutil/diskutil (UniXNU's prepare-owner-data-fixture.py), so .github/workflows/data-seed.yml builds it on a hosted macOS runner: 256 MiB for a RAM seed, 8192 MiB for the persistent container.",
+  "The Data volume needs an APFS seed built with macOS hdiutil/diskutil (UniXNU's prepare-owner-data-fixture.py), so .github/workflows/data-seed.yml builds it on a hosted macOS runner: 256 MiB for a RAM seed, 8192 MiB for the persistent container. The seed also goes to an encrypted release asset (data-seed-<size>mib) because an artifact download needs a GitHub token the build host does not keep, while a release asset is readable without one.",
 ]
 completion = [
   "status --json resolves the ARM64, sdm710, iPadOS and device layers, prints a non-empty patch order and shows the device package as kits/sirius.",
