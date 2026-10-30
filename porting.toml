@@ -12,7 +12,7 @@ schema_version = 1
 name = "sirius"
 soc = "SDM710"
 os_profile = "ipados-17.7.11-21H461"
-summary = "Xiaomi Mi 8 SE running the UniXNU source kernel through its own U-Boot UEFI: entry, MMU, timer, PSCI, platform expert and the boot-progress console work on hardware; IOKit is blocked on AppleARMCPU claiming /cpus."
+summary = "Xiaomi Mi 8 SE running the UniXNU source kernel through its own U-Boot UEFI: entry, MMU, timer, PSCI, platform expert and the boot-progress console work on hardware; early boot and UI process launches work, but the local 256 MiB Data window runs out of space and visible UI remains unverified."
 
 [[area]]
 id = "configuration"
@@ -37,6 +37,7 @@ procedure = [
   "Compile the hardware tree through the payload step (prototype: dtc -I dts -O dtb -i <soc>/dts dts/sirius.dts).",
 ]
 findings = [
+  "Local 2026-10-30 integration selects GopFramebuffer, AppleKeyStoreState and ShengHidInput, links the late display archive, enables CPU frequency, FTS521 touch and GMU phase 2, and carries a 256 MiB Data seed fallback. Persistent Data mounted on this unit, but 256 MiB still reaches ENOSPC. Default panic autoreset has been removed because the panic buffer may contain recovered assertions.",
   "board.toml gained build-sirius-emmc.py in the archive list next to the USB console entry.",
   "board.toml lists build-sirius-emmc.py alongside the other archives, because the SDCC1 probe is compiled the same way as the USB console and joins the same force-loaded archive.",
   "Format 2 replaced the hand-written ADT generator of the legacy port (scripts/make-sirius-adt.py) with a board DTS: the payload step compiles the tree and derives kernel.macho.adt from it.",
@@ -85,6 +86,7 @@ procedure = [
   "U-Boot boots UniXNU when /EFI/UniXNU/BOOTUNIXNU exists on the vendor partition and boots Linux otherwise.",
 ]
 findings = [
+  "DarwinBoot now records free memory runs and the final EFI map; the integrated payload booted on the local unit. USB control corrections are built in a separate unflashed candidate.",
   "The eMMC work adds no firmware component: the payload still boots through U-Boot with the same marker file.",
   "U-Boot's UEFI services are enough for UniXNU, DarwinBoot and XNU: no Mu-Silicium platform port is needed for this board.",
   "DarwinBoot's GIC-500 pre-configuration (the iBoot role) is what lets the kernel pass lockdown and start kexts on this SoC.",
@@ -157,6 +159,7 @@ procedure = [
   "Read the MEM row of the boot-progress panel and compare it with the DTS range.",
 ]
 findings = [
+  "The local boot used the 0xaa000000 contiguous window. SPMI PON register windows are mapped per channel instead of mapping the entire 32 MiB channel region.",
   "The eMMC probe maps two register windows (GCC and SDCC1) and reads only; the payload memory map is unchanged.",
   "The single contiguous range is what DarwinBoot's window allocation and the ADT handoff require; the two physical banks are described as one range on purpose.",
 ]
@@ -191,6 +194,8 @@ procedure = [
   "Read the evidence off the boot-progress console: the probe prints the GPT rows, the driver logs the block count it publishes.",
 ]
 findings = [
+  "scripts/grow-data-container-macos.sh prepares an 8 GiB copy of an existing Data seed using hdiutil and diskutil resizeContainer, checks the volume and geometry, and refuses Linux or overwriting an output. Shell syntax and Linux refusal tested; the macOS resize itself has not run here.",
+  "Local evidence: the 256 MiB persistent Data window at LBA 35627008 mounts disk3s1 OwnerData. Early boot completes, but containermanagerd reports ENOSPC at capture time 185.8s. The APFS Whole-media filter is present; successful Data lookup is confirmed. Increasing APFS capacity remains blocked on macOS diskutil/hdiutil or a larger prepared seed.",
   "The data path works: ADMA2 reads return EFI PART from LBA 1, the GPT header parses (entries_lba=2, count=84, size=128) and 81 partitions with geometry are listed; boot 1179648..1310719, vendor 11010048..17301503, userdata 17301504..122142686.",
   "Five conditions had to hold at once: the RCG2 encoding (CFG=0x2017, M=1, N=0xfc, D=0xfb), 1.8 V I/O (the board's vqmmc), the 32-bit interrupt/error map at 0x30/0x32/0x36, the ADMA descriptor address at 0x58/0x5c rather than 0x00, and cache maintenance (flush_dcache64) because the engine reads memory and not the CPU cache.",
   "SMMU is not the blocker: the boot chain leaves it disabled (scr0=0x00230406, bit0=0) and writing S2CR hung the SoC twice, so the driver only reads SMMU state.",
@@ -238,7 +243,7 @@ evidence = [
 [[area]]
 id = "display"
 status = "implemented"
-components = []
+components = ["GopFramebuffer"]
 paths = ["package/BootProgress.c", "package/BootLog.c", "package/Font.h", "scripts/build-boot-progress.py"]
 inputs = [
   "U-Boot hands over a 1080x2240 splash framebuffer at 0x9c000000 through GOP (vidconsole).",
@@ -252,6 +257,7 @@ procedure = [
   "Build kernel, payload and volume, boot, and read the panel: stage lines, TOPO, PROBE, MEM and panic text.",
 ]
 findings = [
+  "The local boot registers the GOP display and copies six frames; SpringBoard and backboardd exec events do not establish a visible or usable UI. HuajiFruit logs copied into docs/evidence are reference observations, not results for this unit.",
   "The panel gained an EMMC row (step, version, capabilities, state, clock, power, clock-branch halts) next to the USB row, so the storage bring-up is visible without a serial link.",
   "The USB row (drawn by this panel) labels its six values after what they now carry - step, txev, rxev, chars, echo, poll - because they were first wired to register names and had drifted.",
   "The panel is the readable kernel log of this port: it renders the console, the TOPO/PROBE rows and panic() output.",
@@ -273,7 +279,7 @@ evidence = [
 [[area]]
 id = "input"
 status = "planned"
-components = []
+components = ["ShengHidInput", "ShengNovatekTouch", "QcomGeniSpi"]
 paths = ["docs/HANDOFF.zh-CN.md"]
 inputs = [
   "The board has no Home button; volume keys are reported by the button node of the ADT.",
@@ -286,6 +292,7 @@ procedure = [
   "Follow the input guide once a touch controller is known, then select an implementation.",
 ]
 findings = [
+  "The local boot identifies the FTS521 and publishes IOHIDEventDriver, with TOUCH down/move/up coordinates in the capture. Visible UI response has not been verified on this unit.",
   "The SDCC1 probe does not touch the ADT buttons, so the input row and its hold/voldown/volup mapping are unchanged.",
   "No input component is selected; the button node exists so that BSPlatform and MobileGestalt read a coherent product.",
 ]
@@ -315,6 +322,7 @@ procedure = [
   "Follow the GPU guide to evaluate Adreno740/AdrenoMetal for this revision; the A616 is not the A740 the component targets.",
 ]
 findings = [
+  "The imported Adreno 616 phase-2 probe logs GMU up and HFI v1 answers on the local unit. This is not a Metal device or a completed graphics driver.",
   "The Adreno family components in the catalog target the A740 of SM8550; a different implementation would be needed here.",
 ]
 completion = [
@@ -387,7 +395,7 @@ evidence = []
 [[area]]
 id = "power"
 status = "planned"
-components = []
+components = ["AppleKeyStoreState"]
 paths = ["dts/sirius.dts"]
 inputs = [
   "No suspend/resume path exists; the boot-progress panel is the only power-facing behaviour so far.",
@@ -400,6 +408,7 @@ procedure = [
   "Follow the power guide to add the PMIC and battery controls once the platform expert is stable.",
 ]
 findings = [
+  "SPMI v5 PON reads identify channel 7, owner 0, subtype 04, spare 00 on this unit. Write/readback and automatic return to ABL fastboot remain unverified. Corrected candidate uses length-minus-one byte count and refuses bootloader reset after failed readback.",
   "The eMMC probe does not vote any RPMH resource; it re-enables the GCC SDCC1 branches that the boot chain had already set.",
   "Reset works through PSCI (the stage-3 reset loop proved it).",
 ]
@@ -433,6 +442,7 @@ procedure = [
   "./unixnu build kernel, ./unixnu build package, then bash scripts/build-darwinboot.sh (or the CI workflow), ./unixnu build payload, and finally make-uboot-payload.py --output the volume to flash.",
 ]
 findings = [
+  "The Linux namespace build successfully prelinks candidate kernel b94137f50c1558336e7df296ffd1157a1d4b0a850b8b9458b5b52d223c1ad971 and assembles payload a5620f295a09ca8ca6d179d12669777cf2d8356b42307505a7c4bd39a61709bb. This candidate has not been flashed. Board archive recipes bind display/HID ABI and add the real keystore, cpufreq, touch and GMU sources.",
   "The eMMC probe ships in the same force-loaded archive as the USB console, so the package list and payload layout are unchanged.",
   "Format 2 generates kernel.macho.adt from the DTS, so the legacy ADT script is retired; make-uboot-payload.py still finishes the volume because U-Boot needs the EFI binaries inside it.",
   "scripts/build-xnu-4k-baseline.sh is a copy of the UniXNU script with one board deviation: the boot-progress interlock only requires the source crypto provider.",
@@ -470,7 +480,7 @@ evidence = [
 id = "diagnostics"
 status = "implemented"
 components = []
-paths = ["package/**", "scripts/patch-xnu-entry-probe.py", "scripts/xnu-panic-screen.c", "scripts/capture-usb-console.py", "docs/HANDOFF.zh-CN.md", "docs/evidence/**", "patches/xnu/**", "scripts/build-sirius-emmc.py"]
+paths = ["scripts/tests/**", "scripts/agent-*.sh", "docs/HANDOFF-AGENT*.md", "package/**", "scripts/patch-xnu-entry-probe.py", "scripts/xnu-panic-screen.c", "scripts/capture-usb-console.py", "docs/HANDOFF.zh-CN.md", "docs/evidence/**", "patches/xnu/**", "scripts/build-sirius-emmc.py"]
 inputs = [
   "The panel and the serial console are the two evidence channels; since the DWC3 CDC console works, the host captures the kernel log directly and photographs are only a fallback.",
 ]
@@ -482,6 +492,7 @@ procedure = [
   "Record the last checkpoint printed on the panel and in the U-Boot/XNU log for every boot, with the kernel and payload hashes of that run.",
 ]
 findings = [
+  "The previous ios-ui-up verdict was a false success based only on process launches: the same capture reports ENOSPC and only six confirmed frame copies. A later 12-second capture received zero bytes, and a nine-byte FASTBOOT request did not produce a fastboot device. USB corrections derive received length from completed TRB residual bytes, parse exact newline commands across packets, and serialize pollers. USB and mock flash failure regressions pass; hardware verification of the new image is pending. See docs/evidence/sirius-20261030-local-boot.md.",
   "A register write-and-read-back test is the next diagnostic for the eMMC data phase, because SDHCI_TRANSFER_MODE reads back 0x33 after writing 0x13, which separates a write the vendor layer ignores from a command that is never sent.",
   "The eMMC probe reports every step (controller registers, the clock tree, the response registers around CMD0/CMD1 and each failure) into the USB console ring, which is how the card clock and CMD2 findings above were obtained without a photograph.",
   "The eMMC probe reports through sirius_usb_log_char() straight into the USB console ring, because kernel console output stops reaching the ring long before bsd_init runs.",
@@ -538,6 +549,7 @@ procedure = [
   "Recovery: flash sirius-distro's build/boot.img, which ignores the marker and boots Linux.",
 ]
 findings = [
+  "Local flashing of boot, the 256 MiB Data sparse window and vendor succeeded, including one intermediate U-Boot fastboot bounce. PMIC commands compiled into U-Boot, but the automatic ABL return has not been verified. agent-flash stops after prerequisite write failures, refuses unknown products, bounds serial commands to SIRIUS01 and requires explicit --allow-userdata before replacing a Data window.",
   "U-Boot needs no source change for this port: with the environment file above, bootcmd runs unixnu_check first and falls back to the Linux path when /EFI/UniXNU/BOOTUNIXNU is absent on p80.",
   "mmc 0:50 is a hexadecimal partition number (0x50 = 80 = the vendor partition); 0:80 is read as 0x80 = 128 and fails with 'Invalid partition 128'.",
   "bootflow scan cannot find p80: it stops after the first 30 partitions of each device, so the boot chain uses load/bootefi with the partition spelled out.",

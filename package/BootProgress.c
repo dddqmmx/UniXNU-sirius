@@ -156,6 +156,11 @@ extern char native_touch_rows[4][120] __attribute__((weak_import));
 extern char native_cpufreq_row[120] __attribute__((weak_import));
 extern volatile uint32_t native_hid_input_events[8] __attribute__((weak_import));
 extern volatile int native_hid_input_results[8] __attribute__((weak_import));
+// The touch path for the live banner: the FTS521 driver (package/sirius_touch.c) and the iOS touch screen device
+// (package/SiriusHidProbe.cpp): its stage, the event driver that attached and the reports handed to it.
+extern volatile uint32_t sirius_touch_state[8] __attribute__((weak_import));
+extern volatile uint32_t sirius_hid_stage __attribute__((weak_import));
+extern char sirius_hid_driver[40] __attribute__((weak_import));
 extern volatile uint32_t native_touch_loop_step __attribute__((weak_import));
 extern volatile uint32_t native_touch_seq,native_touch_count __attribute__((weak_import));
 extern volatile int native_touch_xs[12],native_touch_ys[12],native_touch_ids[12] __attribute__((weak_import));
@@ -708,7 +713,15 @@ void boot_progress_stage(const char *text) {
   if (!started && !state.frozen) draw(now);
   release();
 }
+// sirius-spawn-log=1: one console line per exec and per exit, with the second, so a capture shows which jobs run, restart or get killed
+// while the CPU sits idle (the panel keeps only the last three failures).
+static int spawn_log=-1;
+static int spawn_logging(void) {
+  if(spawn_log<0){int v=0;PE_parse_boot_argn("sirius-spawn-log",&v,sizeof v);spawn_log=(v==1);}
+  return spawn_log;
+}
 void boot_progress_process_stage(int pid,const char *name,const char *text) {
+  if(enabled && !strcmp(text,"exec process signature accepted") && spawn_logging())printf("SPAWN %us exec %d %.24s\n",seconds(),pid,name?name:"?");
   if(!enabled || !take())return;
   char stamped[BP_COLS];unsigned now=seconds();
   if(!strncmp(text,"exec process signature",22))census_note(name,0);
@@ -719,6 +732,7 @@ void boot_progress_process_stage(int pid,const char *name,const char *text) {
 }
 void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t code) {
   if(!enabled)return;
+  if(spawn_logging())printf("SPAWN %us exit %d %.24s status=%x ns=%u code=%llx\n",seconds(),pid,name?name:"?",(unsigned)status,ns,(unsigned long long)code);
   census_note(name,1);
   if(name && !strcmp(name,"xpcproxy") && pid==proc_selfpid())xpc_fail_note(status,ns,code);
   if(__atomic_exchange_n(&exit_lock,1,__ATOMIC_ACQUIRE)) {
@@ -1037,6 +1051,9 @@ extern volatile uint64_t armcpu_ipi_interrupts __attribute__((weak_import));
 static volatile uint64_t sleep_n,sleep_over_sum,sleep_over_max,sleep_late50;
 static uint64_t banner_sleep_n,banner_sleep_sum,banner_sleep_late,banner_tint,banner_ipi;
 static unsigned banner_second,banner_top;
+// The first framebuffer row of the live panel (its title), 0 before it is first drawn. The GopFramebuffer board fork copies the
+// compositor's frames only above it, so a presented frame no longer paints over the panel between its repaints.
+volatile unsigned boot_progress_panel_top;
 static uint64_t banner_copy_n,banner_signature,banner_ufs_v,banner_ufs_r,banner_ufs_n,banner_ufs_b;
 static uint32_t banner_load[4];
 static void crash_banner(unsigned now) {
@@ -1148,10 +1165,17 @@ static void crash_banner(unsigned now) {
       (unsigned long long)(sl-banner_sleep_late),(unsigned long long)(ti-banner_tint),(unsigned long long)(ip-banner_ipi));
     banner_sleep_n=sn;banner_sleep_sum=ss;banner_sleep_late=sl;banner_tint=ti;banner_ipi=ip;
   }
-  // The work-interval log gives its rows to the stack rows (the banner must fit the panel's height).
+  // TOUCH: chip events read and contacts begun, then the iOS device's stage, the event driver attached below it, and the
+  // touch reports handed to that driver with the last handleReport result (0 = accepted).
+  if(&sirius_touch_state && &sirius_hid_stage && &native_hid_input_events) {
+    snprintf(rows[n++],120,"TOUCH chip stage=%u events=%u contacts=%u i2c_err=%u | hid stage=%u driver=%.24s reports=%u last=%x",
+      sirius_touch_state[0],sirius_touch_state[3],sirius_touch_state[4],sirius_touch_state[5],sirius_hid_stage,
+      (&sirius_hid_driver && sirius_hid_driver[0])?sirius_hid_driver:"none",native_hid_input_events[6],(unsigned)native_hid_input_results[6]);
+  }
+  // The work-interval log gives its rows to the stack rows and the TOUCH row (the banner must fit the panel's height).
   if(!stack_rows && &native_wi_count && native_wi_count) {
     unsigned c=native_wi_count;
-    for(unsigned i=0;i<3 && i<c;++i)snprintf(rows[n++],120,"%s",native_wi_log[(c-1-i)%4]);
+    for(unsigned i=0;i<2 && i<c;++i)snprintf(rows[n++],120,"%s",native_wi_log[(c-1-i)%4]);
   }
   if(&native_cpufreq_row && native_cpufreq_row[0])snprintf(rows[n++],120,"CPU   %.110s",native_cpufreq_row);
   // The extension slots are drawn only on the boot page (display bound); the GPU slots 2-7 also go to the live banner.
@@ -1178,6 +1202,7 @@ static void crash_banner(unsigned now) {
       for(unsigned x=0;x<cols*6*display.scale;++x)*(volatile uint32_t *)(display.frame+(uintptr_t)y*display.stride+x*4)=0xff000000;
     }
   banner_top=title;
+  boot_progress_panel_top=title;
   char head[120];
   snprintf(head,sizeof head," UniXNU live diagnostics%s%s%s  t=%us  crashes=%u exits=%u",build_tag[0]?"  [":"",build_tag,
     build_tag[0]?"]":"",now,crashes,failed);

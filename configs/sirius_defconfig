@@ -4,8 +4,7 @@
 # apply first, then this file overrides them. The result must stay the first-console
 # configuration the port was qualified with: ArmDTPlatform (the device-tree platform expert)
 # and ArmCpu (the CPU/GIC/timer driver) drive the board through the ADT generated from
-# dts/sirius.dts. No storage, display or PMGR components yet: XNU is expected to reach the video
-# console and stop at the root device (or the AMFI No-PMGR panic).
+# dts/sirius.dts.
 
 CONFIG_XNU_BUILD_ARCHIVES=y
 CONFIG_XNU_SOURCE_CORECRYPTO14=y
@@ -22,68 +21,51 @@ CONFIG_XNU_BOOT_PROGRESS=y
 CONFIG_XNU_DT_PANIC_REGION=y
 
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
-# The DEVELOPMENT kernel references native_legacy_display_probe() unconditionally
-# (offline-component-load-probes.patch); the dormant stub archive of
-# scripts/build-sirius-probes.py keeps the link closed (package/LegacyDisplayProbe.cpp).
-CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/sirius-probes/libSiriusProbes.a"
+# CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y links libNativeLegacyDisplay.late.a, which provides
+# native_legacy_display_probe() and native_legacy_display_late_probe().
+CONFIG_XNU_EXTRA_LD_ARCHIVES=""
 CONFIG_XNU_NATIVE_UFS=n
 CONFIG_XNU_NATIVE_AES=n
 CONFIG_XNU_NATIVE_VIRTIO_BLOCK=n
 CONFIG_XNU_NATIVE_RAM_BLOCK=n
 CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
-CONFIG_XNU_NATIVE_LEGACY_DISPLAY=n
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
 CONFIG_XNU_ARMVIRT_PLATFORM=n
 
-# Profile settings turned off on purpose. The ARM64 profile enables the native AES accelerator
-# and PAN support, and the iPadOS profile enables the mockfs provider, the trust-cache runtime
-# and the CS hash cache. The first-console image has none of them; re-enable each one together
-# with the stage that needs it (storage/root for mockfs and the trust cache, native AES for the
-# storage path) and record the result in porting.toml.
-#
 # Do NOT set CONFIG_XNU_NATIVE_ARCH_TIMER=n here. build-xnu-4k-baseline.sh derives it from
 # XNU_ARMCPU when the variable is absent, and the ARM64 profile leaves it on:
 #   NATIVE_ARCH_TIMER=${XNU_NATIVE_ARCH_TIMER:-${XNU_ARMCPU:-0}}
-# At 0, architectural-timer-entry.patch compiles the BCM2837 local interrupt router write into
-# start.s (0x40000040 + cpu*4, the Raspberry Pi local peripherals). That address does not exist
-# on SDM710 and the store aborts before the MMU is on, which looks like a hang right after the
-# entry probe's blue bar with no magenta bar.
-# PAN stays ON (the ARM64 profile's value). Kryo 360 implements PSTATE.PAN and the kernel
-# leaves SCTLR_EL1.SPAN clear, so every exception entry from EL0 sets PSTATE.PAN and a
-# privileged access to a user page faults unless the PAN build clears it: only copyio.c's
-# user_access_enable()/disable() do that, and they exist only with this flag. With it off the
-# exec of /sbin/launchd stalls in load_init_program_at_path: the pid 1 thread sits inside
-# copyout() of the launchd path writing 0x1000 and takes tens of millions of faults, each one
-# resolved by vm_fault and immediately taken again (see porting.toml, storage/diagnostics).
-# build-xnu-4k-baseline.sh compiles copyio.c, pcb.c and platform_tests.c with
-# -march=armv8.1-a when this is 1: reading the PSTATE.PAN builtin needs it, writing does not.
+#
+# PAN must stay on (the ARM64 profile default). Kryo 360 implements PAN, and XNU's
+# SCTLR_EL1_DEFAULT leaves SPAN clear, so the CPU sets PSTATE.PAN on every exception entry to
+# EL1. With CONFIG_XNU_NATIVE_PAN=n copyio never clears it again, so a copyin/copyout that runs
+# with PAN set takes a level-3 permission fault, vm_fault finds the page present and returns
+# success, and the store faults again forever.
 CONFIG_XNU_NATIVE_PAN=y
 CONFIG_XNU_SOURCE_MOCKFS=n
 CONFIG_XNU_TRUST_CACHE_RUNTIME=y
-# iPadOS signs code in 16 KiB pages; this 4 KiB kernel accepts the dyld shared cache's signature
-# only through the native 4K hash cache (dyld's fcntl 92 on the cache returned EBADEXEC without it).
+# On for the shared cache: iPadOS signs code in 16 KiB pages, and this 4 KiB kernel can only accept
+# such a signature through native-4k-signature-hash-cache.patch, which verifies the whole file
+# against the original hashes and derives the 4 KiB ones. Without it dyld's fcntl that registers
+# the shared cache's signature returns EBADEXEC (85).
 CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
 
-# launchd's first syscall that fails is shared_region_check_np (294): it returns ENOMEM with
-# "vm_shared_region_start_address() failed" because no shared cache is mapped. The cache lives in
-# the SystemOS cryptex, and offline-owner-systemos-mount.patch (ARM64 series) mounts that volume as
-# a union over / before launchd starts and sets dyld's no-ignition bit. BRINGUP_OWNER_CACHE builds
-# it without the owner root trust chain; package/NativeEmmc.cpp then authorizes the eMMC volumes
-# only with the boot argument sirius-allow-unverified=1.
+# Compile the bsd_init call site of sheng-platform-power.patch so package/SiriusPmgr.cpp can
+# advertise the ApplePMGRNub that AMFI looks for (the target kernelcache stays unmodified).
+CONFIG_XNU_SHENG_PMGR=1
+
+# dyld's shared cache is in the SystemOS cryptex, not on the root volume: with neither mounted,
+# launchd's shared_region_check_np returns ENOMEM and dyld stops. offline-owner-systemos-mount.patch
+# (ARM64 series) mounts the SystemOS volume (8846FE78-..., the patch default for this image) as a
+# union over / before launchd starts and sets dyld's no-ignition bit.
 CONFIG_XNU_BRINGUP_OWNER_CACHE=y
 CONFIG_XNU_OWNER_CACHE_MOUNT=y
 CONFIG_XNU_OWNER_CACHE_STARTUP=y
 CONFIG_XNU_OWNER_UNION_SYSTEMOS=y
 
-# launchd's own boot tasks need a writable /private/var: without one, `mount -P 1` exits 66 and the
-# exit panics the boot. The Data volume comes from the payload's APFS seed (the data-seed workflow
-# builds it on a macOS runner; --data-ramdisk carries it in the /chosen memory map), and the same
-# patch mounts it at /private/var before launchd starts. sirius-owner-data-bringup.patch drops the
-# boot-manifest requirement in the bring-up mode. The UUID is the current 256 MiB seed's volume
-# (release asset data-seed-256mib, owner-data.cdr 8b77be38...); a differing one is reported.
+# The Data volume: launchd's mount boot task exits 66 without one. The same patch mounts the APFS
+# volume of the Data window (persistent eMMC container or payload RAM seed) at /private/var before
+# launchd starts. package/NativeEmmc.cpp answers native_ram_block_volume_seed() (SIRIUS_DATA_SEED).
 CONFIG_XNU_OWNER_DATA_MOUNT=y
 CONFIG_XNU_SIRIUS_DATA_SEED=y
-CONFIG_XNU_OWNER_DATA_VOLUME_UUID="7F00D031-C00B-4368-A3FF-D4788A1323D6"
-
-# Compile the bsd_init call site of sheng-platform-power.patch so package/SiriusPmgr.cpp can
-# advertise the ApplePMGRNub that AMFI looks for (the target kernelcache stays unmodified).
-CONFIG_XNU_SHENG_PMGR=1
+CONFIG_XNU_OWNER_DATA_VOLUME_UUID="9399864F-4F91-48FB-BE3E-AA0DFD524229"

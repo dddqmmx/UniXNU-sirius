@@ -5,12 +5,6 @@
 # Apple device-tree properties come from the selected OS profile
 # (profiles/os/ipados-17.7.11-21H461/profile.toml of UniXNU); the GIC, timer and CPU topology
 # come from the sdm710 SoC profile and dts/sirius.dts.
-#
-# Bring-up stage: the XNU kernel reaches IOKit through the device's own U-Boot, which replaces
-# the Mu-Silicium firmware step. There is no [firmware] table and no boot image on this port:
-# UniXNU.efi is started by U-Boot from a FAT partition, DarwinBoot.efi travels in the payload
-# volume as a [[driver]], and the payload FAT volume is flashed to the vendor partition
-# (mmcblk0p80, 3 GiB).
 
 schema_version = 2
 
@@ -25,9 +19,10 @@ kit = "sirius"
 # ArmDTPlatform drives the platform expert from dts/sirius.dts. ArmCpu is the board's modified
 # copy in drivers/ArmCpu (non-Apple timer INTID, /cpus probe counters, sheng-smp). DarwinBoot is
 # the board's fork with the GIC-500 pre-configuration and the INTID 19 timer. XnuPrelink is the
-# prelink kit the OS profile names.
+# prelink kit the OS profile names. GopFramebuffer, AppleKeyStoreState and ShengHidInput drive
+# the iOS userspace display, keystore state and touch input.
 [components]
-include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot"]
+include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot", "GopFramebuffer", "AppleKeyStoreState", "ShengHidInput"]
 
 # The unchanged iPad7,1 iPadOS 17.7.11 restore image, the same target as fajita and sheng.
 # SDM710 (Kryo 360, Cortex-A75/A55) is ARMv8.2 without pointer authentication, so it runs
@@ -43,9 +38,6 @@ chip_id = 0x8011
 board_id = 12
 fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]
 
-# The kernel step runs on macOS + Xcode (the CI workflow in this repository) or on Linux
-# through scripts/linux of UniXNU. config_fragments apply in order, then defconfig overrides
-# them: sirius keeps the first-console configuration of the legacy port.
 [kernel]
 defconfig = "sirius_defconfig"
 config_fragments = ["arch:configs/common.config", "soc:configs/sdm710.config", "os:configs/ipados.config"]
@@ -56,27 +48,23 @@ archives = [
   "component:ArmDTPlatform",
   "component:ArmCpu",
   "build-libpthread-kernel.py",
-  "build-sirius-probes.py",           # the dormant probe stubs (package/LegacyDisplayProbe.cpp)
-  "build-boot-progress.py",           # the boot progress display (kits/sirius, the readable kernel log)
+  "component:AppleKeyStoreState",
+  "component:ShengHidInput",          # board recipe scripts/build-sheng-hid-input.py; linked by the display archive below
+  "build-native-legacy-display.py",   # the NativeLegacyDisplay / GopFramebuffer late archive
+  "build-boot-progress.py",           # the boot progress display (kits/sirius, the readable kernel log + SPMI reset)
   "build-sirius-pmgr.py",             # the ApplePMGRNub advertisement for AMFI (kits/sirius/SiriusPmgr.cpp)
   "build-sirius-usb.py",              # the CDC-ACM log console (kits/sirius/sirius_usb.c)
-  "build-sirius-emmc.py",             # read-only SDCC1 probe (kits/sirius/sirius_emmc.c)
-  "build-native-emmc.py",             # the IOKit block driver (kits/sirius/NativeEmmc.cpp); its
-                                     # IOStorageFamily imports are bound to the original kernelcache
+  "build-sirius-emmc.py",             # SDCC1 transport (kits/sirius/sirius_emmc.c)
+  "build-sirius-cpufreq.py",          # cpufreq-hw level request (kits/sirius/sirius_cpufreq.c)
+  "build-sirius-touch.py",            # FTS521 touch probe on QUP1 SE1 (kits/sirius/sirius_touch.c)
+  "build-sirius-gpu.py",              # Adreno 616: CX power, GMU/SMMU reads, GMU firmware boot (kits/sirius/sirius_gpu.c)
+  "build-native-emmc.py",             # the IOKit block driver (kits/sirius/NativeEmmc.cpp)
 ]
 
-# The hardware description handed to the payload step. dts/sirius.dts describes the board
-# (memory, CPUs, PSCI, GIC); dts/sdm710.dtsi of the SoC profile carries the shared controller.
 [device_tree]
 source = "device:dts/sirius.dts"
 include_dirs = ["soc:dts"]
 
-# The payload volume: flashed to the vendor partition (mmcblk0p80, 3 GiB) as a FAT32 image and
-# read by U-Boot. dram_size is the observed usable DRAM of the 6 GiB model: 2 GiB at 0x80000000
-# plus 0xfd6c0000 at 0x100000000, and must equal the memory node of dts/sirius.dts.
-# The userdata partition carries the Darwin root. The geometry below was read from the device
-# itself (the SDCC1 probe parses the GPT): first/last LBA in 512-byte units as the GPT stores
-# them, which is also this eMMC's logical block size.
 [userdata]
 first_lba = 0x1080000              # 17301504
 last_lba = 0x747BFDE               # 122142686
@@ -87,16 +75,26 @@ windows = [
 ]
 
 [payload]
-# The two unchanged original trust-cache modules (StaticTrustCache and Cryptex1,SystemTrustCache)
-# bundled byte for byte by UniXNU/scripts/build-original-system-trust.py. With it AMFI can trust the
-# Apple-signed OS binaries instead of every exec being refused.
 trust_cache_sha256 = ["7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7"]
 volume = "SIRIUSESP"
-size_mib = 512
+size_mib = 512                      # holds the kernel, trust cache, EFI binaries and optional 256 MiB RAM Data seed
 loader = "payload"                  # not "firmware": unixnu.toml gets [[driver]] Payloads/DarwinBoot.efi
 title = "sirius first boot: XNU to console"
 dram_size = "0x17d6c0000"
 panic_screen = true
+# The OS profile's four fixups (a list here replaces the profile's), then one of this board's: without a
+# Metal device CoreImage falls back to OpenGL, whose dispatch table is empty here, and iconservicesagent
+# jumps to address 0 in CI::GLContext::init. The fifth entry replaces CoreUI's [CIContext
+# contextWithOptions:] call in +[CUIShapeEffectStack sharedCIContext] (0x1a31d7b84 unslid, a bl) with
+# mov x0, xzr: the shared context is nil, the glyph rasterizer returns no image and IconFoundation checks
+# for that (cbz x26), so a vector symbol draws empty instead of killing the agent.
+text_fixups = [
+  "dyld_shared_cache_arm64.15,421e8bc,28ad1bb0008544f9,c0035fd6008544f9",
+  "dyld_shared_cache_arm64.13,1b05bec,44008052,24008052",
+  "dyld_shared_cache_arm64.13,1b05b08,44008052,24008052",
+  "BTAudioHALPlugin,38bec,ffc300d1f44f01a9,000080d2c0035fd6",
+  "dyld_shared_cache_arm64.11,34f3b84,979701944914d794,e0031faa4914d794",
+]
 kernel_args = [
   "debug=0x14e",
   "kt_fixed_zones=120",
@@ -109,53 +107,61 @@ kernel_args = [
   "armcpu-timer-intid=19",          # SDM670/710 virtual timer is GIC PPI 3 (INTID 19), not the architectural PPI 27
   "sheng-pmgr=2",                   # publish an ApplePMGRNub for the unchanged AMFI (kits/sirius/SiriusPmgr.cpp)
   "sirius_usb=2",                   # CDC-ACM log console over DWC3 (patches/xnu/sirius-usb-console.patch)
-  "sirius_emmc_hs=3",              # card clock ladder: 1 = 25 MHz, 2 = up to 50, 3 = up to 100; each step
-                                    # is proven against blocks read at the 400 kHz identification rate and
-                                    # a failure falls back to the last one that read back correctly
+  "sirius_emmc_hs=3",              # card clock up to 100 MHz (1 = 25, 2 = 50, 3 = 100), each step proven
+                                    # against blocks read at 400 kHz; falls back to the last good one
   "sirius_emmc_win=1",              # publish the SHNGROOT windows of [userdata] as block devices
   "launchdsuffix=release",          # DEVELOPMENT: load /sbin/launchd directly and report its errno
   "amfi_get_out_of_my_way=1",       # bring-up: let init exec from an unverified root
-  "sirius-allow-unverified=1",      # bring-up: NativeEmmc authorizes the SystemOS union mount
-                                    # (the eMMC windows have no owner policy)
-  "sirius-skip-rootauth=1",         # the sealed-root answer needs the owner-root chain; see
-                                    # patches/xnu/sirius-skip-rootauth.patch
-  "sheng-disable-watchdogd=1",      # package/BootWatchdogPolicy.c disables com.apple.watchdogd before
-                                    # launchd: it traps (brk #1) without a watchdog backend and its
-                                    # exit panics the boot
-  "sheng-lite=1",                   # the same policy disables the network/iCloud/photo daemons this
-                                    # phone has no use for; they compete with the boot for memory
-  # "sirius_usb_power=1",           # opt-in: power the USB GDSC and report the readback (proven safe).
-  #                                 # 2/3/4 additionally touch the branch clocks; on SDM710 that stalls the
-  #                                 # bus and reboots the phone unless the clock sources are programmed first.
+  "sirius-allow-unverified=1",      # bring-up: NativeEmmc authorizes the SystemOS union mount (no owner policy)
+  "sirius-data-write=1",            # NativeEmmc publishes the persistent Data container behind the root image in
+                                    # userdata read-write when present, and falls back to the RAM seed otherwise
+  "sheng-disable-watchdogd=1",      # package/BootWatchdogPolicy.c disables com.apple.watchdogd before launchd
+  "sheng-lite=1",                   # disables the network/iCloud/photo daemons this phone has no use for
+  "sirius-skip-rootauth=1",         # the sealed-root answer needs the owner-root chain; see patches/xnu/sirius-skip-rootauth.patch
+  "offline-legacy-register=1",      # register GOP framebuffer service
+  "offline-legacy-gop=1",           # enable hardware GOP mapping
+  "offline-legacy-unit-scale=2",    # 2x display unit scale for high DPI
+  "offline-legacy-pm=1",            # publish display PM states
+  "offline-legacy-validate=1",      # validate swap requests
+  "offline-legacy-transfer=1",      # transfer framebuffers
+  "offline-legacy-cpu-present=1",   # CPU pixel copy presentation
+  "sirius-fb-wc=1",                 # drivers/GopFramebuffer (board fork): map the scanout write-combined
+  "sirius-fb-cached=1",             # read the write-combined source surface through a cacheable mapping
+  "offline-legacy-phase=4",         # phase 4 display subsystem registration under /arm-io
+  "offline-mobile-graphics-client=1", # support MobileGraphics client
+  "offline-mobile-graphics-load=1", # load MobileGraphics
+  "offline-apfs-load=1",            # load APFS
+  "sheng-vsync=60",                 # 60 Hz software vsync heartbeat
+  "sirius-cpufreq=1",               # kits/sirius/sirius_cpufreq.c: both clusters to their highest non-boost level
+  "offline-key-events=1",           # kits/sirius/KeyStoreProbe.cpp publishes the AppleKeyStoreState service
+  "sheng-aks=1",                    # its user client answers the state queries (no passcode, unlocked)
+  "sirius-spawn-log=1",             # package/BootProgress.c: a SPAWN console line per exec and exit, with the second
+  "sirius-touch=1",                 # package/sirius_touch.c: QUP1 SE1 I2C, FTS521 chip id, then the event FIFO
+  "sirius-touch-hid=1",             # package/SiriusHidProbe.cpp: publish the touch screen (ShengHidInput) to iOS
+  "sheng-touch-hid=1",              # NativeHidInput: add the touch screen collection to that combined device
+  "dk=0",                           # DriverKit off: the in-kernel IOHIDEventDriver matches instead
+  "sirius-skip-setup=1",            # package/BootWatchdogPolicy.c: write Setup's done flags and SpringBoard prefs
+  "sirius-gpu=2",                   # package/sirius_gpu.c: Adreno 616 phases 1-2 (CX power, GMU SMMU context, GMU boot, HFI)
+  "validation_disables=0x10",       # KF_STACKSHOT_OVRD: user stackshots return KERN_NOT_SUPPORTED
 ]
 
-# launchd's first boot task, `mount -P 1`, exits 66 without /chosen/boot-manifest-hash ("failed to
-# get boot-manifest-hash"): it names /private/preboot/<hash> from it. There is no Apple
-# personalization manifest here, so this is an explicit bring-up boot-set identity, not Apple data:
-# the uke port's SHA-384 of "UkeBringup.BootSet.v1\0", the value asteroids and the legacy sirius
-# port boot past mount-phase-1 with.
-[adt.chosen.bytes]
-boot-manifest-hash = "5fd2fc139b688ddf071aa815c1ea75d26bcd994a528cf02e365661eab5139ec7b580d63ca9319e218962a2236f23faca"
-
-# The platform identity seed (--unique-chip-id) is not stored in any repository; the first boot
-# needs no seed, and chip_id is only used together with one.
 [payload.adt]
 chip_id = "8011"
-# The kernel window DarwinBoot allocates: the kernel (~52 MiB), the Data seed (256 MiB), the ADT
-# and the args travel in it. The default 256 MiB window cannot hold the seed. 2.66 GiB is the size
-# the reference port boots this unit with: DarwinBoot must find it as ONE conventional-memory run
-# of the firmware map, and the runs of this unit (2.73 GiB at 0x9f800000, observed with the
-# reference kernel) are where that fits. A window the firmware cannot supply prints NO WINDOW.
-owned_memory_size = "0xaa000000"
-# The OS volume of the 21H461 image set, so /chosen/root-matching selects the APFS volume the
-# driver's OS window carries. The same value qualifies every device record of this OS profile.
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
+owned_memory_size = "0xaa000000"
 
-# The Apple device-tree properties the OS profile does not already supply. Its [adt] tables
-# write /chosen, /product and the iPad7,1 identity (model iPad7,1, target-type J120); the board
-# adds the suspend policy, its own product model and the button set (no Home button).
+[adt.chosen.bytes]
+boot-manifest-hash = "5fd2fc139b688ddf071aa815c1ea75d26bcd994a528cf02e365661eab5139ec7b580d63ca9319e218962a2236f23faca"
+darwinboot-efi-map = "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+[adt.chosen.u32]
+# Bring-up: skip iOS's first-boot data migration. With /chosen/ephemeral-storage datamigrator skips every
+# plugin (os_variant_uses_ephemeral_storage). The staged system apps are not installed while it is set.
+ephemeral-storage = 1
+
 [adt.product.string]
 model = "xiaomi,sirius"
+artwork-display-gamut = "sRGB"
 
 [adt.defaults.u32]
 sleep-disabled = 1                  # no suspend/resume on this board: do not let the CPU park forever

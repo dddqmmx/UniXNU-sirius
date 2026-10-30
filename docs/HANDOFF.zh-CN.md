@@ -2,9 +2,13 @@
 
 更新：2026-10-30。
 
-> **接手的 agent 先读 [`HANDOFF-AGENT.md`](HANDOFF-AGENT.md)**：里面是这台机器上构建环境怎么恢复、
-> 本轮做到哪（PAN、SystemOS 联合挂载、eMMC 50 MHz、Data seed）、下一步是什么，以及
-> 「全自动调试环路」（结论 → fastboot → 刷写 → 抓串口 → 判定，无需人手按键）的设计任务。
+> **最新真机结论以 [本机验证记录](evidence/sirius-20261030-local-boot.md) 为准。**
+> Data 挂载和 early boot 已通过，UI 进程已执行，但 256 MiB Data 从采集时间 185.8 秒开始报 ENOSPC，不能宣称 iOS 界面可用。
+> USB 已静默，当前内核的 FASTBOOT 命令未使设备复位。已构建 USB/TRB 与 PMIC 修正候选镜像，尚未刷入。
+> 默认 panic 自动复位已取消；自动回刷尚未真机验证。需要更大 APFS Data 容器及一次人工返回 ABL fastboot。
+
+> **接手的 agent 先读 [`HANDOFF-AGENT-2.md`](HANDOFF-AGENT-2.md) 与 [`HANDOFF-AGENT.md`](HANDOFF-AGENT.md)**：
+> `HANDOFF-AGENT-2.md` 记录了最新完成的完整 iOS 用户态驱动栈集成（Display `GopFramebuffer`、KeyStore `AppleKeyStoreState`、Touch `FTS521` + `ShengHidInput`、CPU 调频 `sirius_cpufreq`、GPU `Adreno 616` Phase 1–2、双路 Data 卷）以及已落地的「全自动调试环路」（`package/BootReset.c` SPMI `0x88f=0x04` + PSCI 复位、`sirius_usb.c` 串口 `FASTBOOT` 指令、U-Boot `CONFIG_CMD_PMIC=y`、`scripts/agent-flash.sh` 与 `scripts/agent-loop.sh`）。
 
 本文档交接"把 UniXNU（XNU 内核 + iPadOS 用户态）移植到小米 8 SE"的全部上下文：当前进度、架构决策、构建/部署循环、已解决的问题、下一步路线。
 

@@ -47,17 +47,7 @@ extern unsigned long gPhysBase, gPhysSize;
 #define EMMC_BLOCK_SIZE 512
 
 extern "C" void sirius_usb_log_char(char c);
-
-/* Log-only readouts of this port's other instruments (cpufreq votes, legacy display counters); the
- * reference driver gets them through weak_import, which the static link does not resolve, so this
- * file declares and defines them (definitions at the end) and they report "nothing". */
-extern "C" int sirius_cpufreq_report(unsigned domain, uint32_t state[6], uint32_t *vote_mhz);
-extern "C" void sirius_cpufreq_retry(void);
-extern "C" {
-volatile uint64_t sirius_fb_read[2];
-volatile uint32_t sirius_fb_source_cache, sirius_fb_scanout_cache, sirius_fb_source_wimg;
-}
-extern "C" volatile uint32_t sirius_fb_source_cache, sirius_fb_scanout_cache, sirius_fb_source_wimg;
+extern "C" void boot_log_tick(unsigned now);
 
 /* The kernel console stops feeding the USB ring before bsd_init prints anything (see
  * sirius_emmc.c), so IOLog and printf never reach the host from here. The reports of this file
@@ -151,6 +141,8 @@ volatile uint32_t nemmc_heartbeats;
  * console has them on every fourth beat. */
 extern "C" volatile uint64_t native_legacy_copy_n, native_legacy_copy_last, native_legacy_copy_max, native_legacy_copy_sum
     __attribute__((weak_import));
+extern "C" volatile uint64_t sirius_fb_read[2] __attribute__((weak_import));
+extern "C" volatile uint32_t sirius_fb_source_cache, sirius_fb_scanout_cache, sirius_fb_source_wimg __attribute__((weak_import));
 
 /* Post-exec probes (patches/xnu/sirius-post-exec-trace.patch). The init exec returns 0 and then
  * the stack asks for no block again, which cannot be told apart from "the launchd thread never
@@ -289,6 +281,8 @@ nemmc_log_cpu_clock(void)
 /* The memory XNU got (DarwinBoot's window) and the free runs DarwinBoot saw before it placed it (db-runs on the command line,
  * drivers/DarwinBoot): the real layout that bounds owned_memory_size. */
 extern "C" unsigned long gPhysBase, gPhysSize;
+extern "C" int sirius_cpufreq_report(unsigned domain, uint32_t state[6], uint32_t *vote_mhz) __attribute__((weak_import));
+extern "C" void sirius_cpufreq_retry(void) __attribute__((weak_import));
 
 /* Where the time goes once storage is idle: user/system/idle share of all cores since the previous sample (the panel's LOAD
  * row, which shows only while it repaints). */
@@ -469,6 +463,7 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 			emmc_log_dec("NEMMC inflight count ", nemmc_inflight_count);
 			emmc_log_dec("NEMMC inflight beats ", nemmc_heartbeats - nemmc_inflight_beat);
 		}
+		boot_log_tick(nemmc_heartbeats * 2);
 		nemmc_heartbeats++;
 		IOSleep(2000);
 	}
@@ -1591,25 +1586,3 @@ sirius_native_emmc_probe(void)
 		emmc_log("NEMMC heartbeat failed\n");
 	}
 }
-
-
-/* ---------------------------------------------------------------------------------------------
- * Diagnostics this board does not build. The reference driver reads them through weak_import
- * symbols (cpufreq votes from kits/sirius/sirius_cpufreq.c, the legacy display's framebuffer
- * counters); the static kernel link still needs a definition, so they answer "nothing to report"
- * here. They are log-only: no boot path depends on their values.
- * ------------------------------------------------------------------------------------------- */
-extern "C" int
-sirius_cpufreq_report(unsigned domain, uint32_t state[6], uint32_t *vote_mhz)
-{
-	(void)domain;
-	(void)state;
-	(void)vote_mhz;
-	return 0;
-}
-
-extern "C" void
-sirius_cpufreq_retry(void)
-{
-}
-

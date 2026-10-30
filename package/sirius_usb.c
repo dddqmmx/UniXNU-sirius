@@ -25,6 +25,9 @@
 #include <vm/pmap.h>
 #include <vm/vm_kern.h>
 #include <pexpert/pexpert.h>
+#include "SiriusUsbControl.h"
+
+static struct sirius_usb_control ud_control;
 
 extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
@@ -1054,11 +1057,21 @@ ud_event(uint32_t ev)
 	unsigned status = (ev >> 12) & 0xf;
 	if (ep == EP_RX && type == 1) {         /* something arrived from the host */
 		ud.rx_event = ev;
-		uint32_t n = (ev >> 16) & 0xffffu;
-		if (n > UD_RX_SIZE) {
-			n = UD_RX_SIZE;
-		}
+		ud_sync(UD_TRB_RX, 16);
+		volatile uint32_t *trb = (volatile uint32_t *)(ud.dma + UD_TRB_RX);
+		uint32_t n = sirius_usb_received_bytes(trb[2], trb[3], status, UD_RX_SIZE);
 		ud_sync(UD_RX, UD_RX_SIZE);
+		const volatile char *rx = (const volatile char *)(ud.dma + UD_RX);
+		for (uint32_t k = 0; k < n; k++) {
+			enum sirius_usb_command command = sirius_usb_control_feed(&ud_control, rx[k]);
+			if (command == SIRIUS_USB_FASTBOOT) {
+				extern void sirius_reset_to_fastboot(const char *reason);
+				sirius_reset_to_fastboot("usb-rx FASTBOOT");
+			} else if (command == SIRIUS_USB_REBOOT) {
+				extern void sirius_reset_normal(const char *reason);
+				sirius_reset_normal("usb-rx REBOOT");
+			}
+		}
 		/* Any byte from the host means "send me the log again": the ring is otherwise only handed
 		 * over once, at enumeration, so a capture that starts a moment too late sees nothing. */
 		if (n != 0) {
@@ -1123,9 +1136,15 @@ ud_event(uint32_t ev)
 	}
 }
 
+static volatile unsigned ud_poll_busy;
+
 static void
 ud_poll(void)
 {
+	/* The monitor and the USB thread share the event cursor, TRBs and TX position. */
+	if (__atomic_exchange_n(&ud_poll_busy, 1, __ATOMIC_ACQUIRE)) {
+		return;
+	}
 	uint32_t count = dwc_rd(GEVNTCOUNT) & 0xffffu;
 	if (count) {
 		ud_sync(UD_EVT, UD_EVT_SIZE);
@@ -1156,6 +1175,7 @@ ud_poll(void)
 		sirius_usb_pll = (uint32_t)ud.echoes;  /* round trips from the echo path */
 		sirius_usb_dwc = (uint32_t)ud.polls;
 	}
+	__atomic_store_n(&ud_poll_busy, 0, __ATOMIC_RELEASE);
 }
 
 /* Called from the boot-progress refresh, which demonstrably keeps running even when the poller
@@ -1560,6 +1580,8 @@ sirius_usb_gadget_start(vm_offset_t dwc, vm_offset_t smmu)
 		}
 	}
 	if (!ud.hold) {
+		extern void boot_reset_init(void);
+		boot_reset_init();
 		thread_t thread;
 		kern_return_t result = kernel_thread_start(ud_thread, NULL, &thread);
 		if (result == KERN_SUCCESS) {
