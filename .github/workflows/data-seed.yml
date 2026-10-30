@@ -25,6 +25,13 @@ on:
         description: Data container size in MiB (256 for a RAM seed, 8192 for the persistent container)
         required: true
         default: "256"
+  # A push that touches this file also builds the default seed: a dispatch needs a token with the
+  # workflow scope, which the build host does not keep, and the seed is the only macOS-only input
+  # of this port.
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/data-seed.yml"
 
 permissions:
   contents: read
@@ -66,7 +73,7 @@ jobs:
       - name: Seed
         working-directory: unixnu
         env:
-          SIZE_MIB: ${{ inputs.size_mib }}
+          SIZE_MIB: ${{ inputs.size_mib || '256' }}
         run: |
           mkdir -p out-seed
           python3 scripts/prepare-owner-data-fixture.py
@@ -121,7 +128,7 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: sirius-data-seed-${{ inputs.size_mib }}mib
+          name: sirius-data-seed-${{ inputs.size_mib || '256' }}mib
           path: ${{ runner.temp }}/out/*
           if-no-files-found: error
           retention-days: 7
