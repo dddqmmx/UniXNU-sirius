@@ -11,34 +11,53 @@
  */
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
+#include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOPlatformExpert.h>
 #include <IOKit/IODeviceTreeSupport.h>
-#include <pexpert/pexpert.h>
-#include <pexpert/arm64/board_config.h>
 #include <machine/machine_routines.h>
+#include <pexpert/pexpert.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
 #include <kern/thread.h>
 #include <kern/task.h>
+#include <kern/host.h>
+#include <mach/host_info.h>
+extern "C" kern_return_t host_statistics64(host_t host, host_flavor_t flavor, host_info_t info, mach_msg_type_number_t *count);
+/* kern/host.h declares realhost only for MACH_KERNEL_PRIVATE code; only its address is needed here. */
+extern "C" struct host realhost;
 #include <kern/sched_prim.h>
-#include <IOKit/IOBufferMemoryDescriptor.h>
-#include <sys/types.h>
+#include <libkern/libkern.h>
+#include <sys/param.h>
 
 extern "C" {
-/* osfmk/mach/arm/vm_param.h, which the exported headers do not carry. */
-extern unsigned long gVirtBase, gPhysBase, gPhysSize;
 /* From sirius_emmc.c. prepare() is idempotent and also fills total_blocks from the GPT. */
 int sirius_emmc_prepare(void);
 int sirius_emmc_read_block(unsigned long long lba, void *buffer);
-/* Up to sirius_emmc_run_blocks blocks in one call: one CMD18 with Auto-CMD12 when runs work,
- * single blocks otherwise. */
+/* Up to sirius_emmc_run_blocks blocks in one call: a single multi-block command when it works. */
 int sirius_emmc_read_blocks(unsigned long long lba, unsigned count, void *buffer);
+/* Writes, only inside the one window opened with sirius_emmc_set_write_window(). */
+int sirius_emmc_set_write_window(unsigned long long first, unsigned long long blocks);
+int sirius_emmc_write_blocks(unsigned long long lba, unsigned count, const void *buffer);
+int sirius_emmc_flush(void);
 extern const unsigned sirius_emmc_run_blocks;
 extern unsigned long long sirius_emmc_total_blocks;
+/* The kernel's managed physical range, which a loader-placed ramdisk has to lie inside. */
+extern unsigned long gPhysBase, gPhysSize;
 }
 
 #define EMMC_BLOCK_SIZE 512
 
 extern "C" void sirius_usb_log_char(char c);
+
+/* Log-only readouts of this port's other instruments (cpufreq votes, legacy display counters); the
+ * reference driver gets them through weak_import, which the static link does not resolve, so this
+ * file declares and defines them (definitions at the end) and they report "nothing". */
+extern "C" int sirius_cpufreq_report(unsigned domain, uint32_t state[6], uint32_t *vote_mhz);
+extern "C" void sirius_cpufreq_retry(void);
+extern "C" {
+volatile uint64_t sirius_fb_read[2];
+volatile uint32_t sirius_fb_source_cache, sirius_fb_scanout_cache, sirius_fb_source_wimg;
+}
+extern "C" volatile uint32_t sirius_fb_source_cache, sirius_fb_scanout_cache, sirius_fb_source_wimg;
 
 /* The kernel console stops feeding the USB ring before bsd_init prints anything (see
  * sirius_emmc.c), so IOLog and printf never reach the host from here. The reports of this file
@@ -127,6 +146,12 @@ static bool nemmc_panic_dumped;
 extern "C" char boot_progress_panic_text[2048];
 volatile uint32_t nemmc_heartbeats;
 
+/* What a presented frame costs (package/LegacyDisplayProbe.cpp and the GopFramebuffer board fork): copies, their time, a read-only
+ * pass over the source and the cache modes of both mappings. The panel shows only some of these and only while it repaints; the
+ * console has them on every fourth beat. */
+extern "C" volatile uint64_t native_legacy_copy_n, native_legacy_copy_last, native_legacy_copy_max, native_legacy_copy_sum
+    __attribute__((weak_import));
+
 /* Post-exec probes (patches/xnu/sirius-post-exec-trace.patch). The init exec returns 0 and then
  * the stack asks for no block again, which cannot be told apart from "the launchd thread never
  * started" without looking at the other side of the exec. The kernel writes these counters from
@@ -174,14 +199,12 @@ sirius_user_thread_probe(void)
 
 static unsigned int nemmc_stack_dumps;
 
-/* PSTATE.PAN is set on every exception entry when SCTLR_EL1.SPAN is set, and a set PAN makes
- * every privileged access to a user page fault. The kernel is built with
- * CONFIG_XNU_NATIVE_PAN=y, so copyio.c's user_access_enable()/disable() clear it around every
- * copyin/copyout and around the bulk single reads. The clear is per thread, so a boot argument
- * that left it on, or a path that writes a user address without going through copyio, would
- * still fault in a loop; the report below says what the driver's own thread sees, and the
- * clear is only kept for a kernel built without the PAN support (where nothing else clears it).
- * Both are guarded by the feature check: on a core without PAN the instruction is undefined. */
+/* PSTATE.PAN is set on every exception entry while SCTLR_EL1.SPAN is clear, and a set PAN makes
+ * every privileged access to a user page fault. The kernel is built with CONFIG_XNU_NATIVE_PAN=y,
+ * so it keeps PAN set and copyio.c opens it around each user access itself. Only report it here:
+ * clearing it once never helped (the next exception entry sets it again), and with PAN support
+ * compiled in a clear PAN at a context switch is a panic. The read is guarded by the feature
+ * check: on cores without PAN the instruction is undefined. */
 static int
 nemmc_pan_implemented(void)
 {
@@ -202,13 +225,7 @@ nemmc_report_pan(void)
 	}
 	/* PSTATE.PAN as a system register (S3_0_C4_C2_3): clang's named form does not accept it. */
 	pan = (uint64_t)__builtin_arm_rsr("S3_0_C4_C2_3");
-	emmc_log_dec("NEMMC pan before ", pan);
-#if !defined(XNU_NATIVE_PAN) || !XNU_NATIVE_PAN
-	if (pan != 0) {
-		__builtin_arm_wsr("S3_0_C4_C2_3", 0);
-		emmc_log_dec("NEMMC pan after ", (uint64_t)__builtin_arm_rsr("S3_0_C4_C2_3"));
-	}
-#endif
+	emmc_log_dec("NEMMC pan ", pan);
 }
 
 static void
@@ -229,6 +246,136 @@ nemmc_dump_init_stack(void)
 		if (word >= 0xfffffff007004000ULL && word < 0xfffffff010000000ULL) {
 			emmc_log_hex("SIRIUS pc ", word);
 		}
+	}
+}
+
+/* The clock this core runs at: nothing in the port sets a CPU frequency, so the cores run at whatever the boot chain left. Count the
+ * architectural PMU's cycle counter over 10 ms of the system counter with interrupts off (the thread cannot move cores meanwhile),
+ * then put PMCR_EL0 and the counter enable back as they were. XNU does not use the architectural PMU on this board. */
+static void
+nemmc_log_cpu_clock(void)
+{
+	uint64_t mpidr, pmcr, enabled, frequency, cycles0, cycles1, ticks0, ticks1;
+	boolean_t interrupts = ml_set_interrupts_enabled(FALSE);
+
+	__asm__ volatile ("mrs %0, mpidr_el1" : "=r"(mpidr));
+	__asm__ volatile ("mrs %0, cntfrq_el0" : "=r"(frequency));
+	__asm__ volatile ("mrs %0, pmcr_el0" : "=r"(pmcr));
+	__asm__ volatile ("mrs %0, pmcntenset_el0" : "=r"(enabled));
+	/* E (bit 0) on, D (bit 3, count every 64th cycle) off; enable the cycle counter (bit 31). */
+	__asm__ volatile ("msr pmcr_el0, %0" :: "r"((pmcr | 1ULL) & ~(1ULL << 3)));
+	__asm__ volatile ("msr pmcntenset_el0, %0" :: "r"(1ULL << 31));
+	__asm__ volatile ("isb");
+	if (frequency == 0) {
+		frequency = 19200000;
+	}
+	__asm__ volatile ("isb\n\tmrs %0, cntpct_el0" : "=r"(ticks0));
+	__asm__ volatile ("mrs %0, pmccntr_el0" : "=r"(cycles0));
+	do {
+		__asm__ volatile ("isb\n\tmrs %0, cntpct_el0" : "=r"(ticks1));
+	} while (ticks1 - ticks0 < frequency / 100);
+	__asm__ volatile ("mrs %0, pmccntr_el0" : "=r"(cycles1));
+	if (!(enabled & (1ULL << 31))) {
+		__asm__ volatile ("msr pmcntenclr_el0, %0" :: "r"(1ULL << 31));
+	}
+	__asm__ volatile ("msr pmcr_el0, %0" :: "r"(pmcr));
+	__asm__ volatile ("isb");
+	ml_set_interrupts_enabled(interrupts);
+
+	emmc_log_hex("NEMMC cpu mpidr ", mpidr & 0xffffff);
+	emmc_log_dec("NEMMC cpu MHz ", (cycles1 - cycles0) * frequency / (ticks1 - ticks0) / 1000000);
+}
+
+/* The memory XNU got (DarwinBoot's window) and the free runs DarwinBoot saw before it placed it (db-runs on the command line,
+ * drivers/DarwinBoot): the real layout that bounds owned_memory_size. */
+extern "C" unsigned long gPhysBase, gPhysSize;
+
+/* Where the time goes once storage is idle: user/system/idle share of all cores since the previous sample (the panel's LOAD
+ * row, which shows only while it repaints). */
+static void
+nemmc_log_load(void)
+{
+	static uint32_t previous[CPU_STATE_MAX];
+	host_cpu_load_info_data_t load;
+	mach_msg_type_number_t count = HOST_CPU_LOAD_INFO_COUNT;
+	uint64_t delta[CPU_STATE_MAX], sum = 0;
+
+	if (host_statistics64((host_t)&realhost, HOST_CPU_LOAD_INFO, (host_info_t)&load, &count) != KERN_SUCCESS) {
+		return;
+	}
+	for (unsigned i = 0; i < CPU_STATE_MAX; i++) {
+		delta[i] = load.cpu_ticks[i] - previous[i];
+		previous[i] = load.cpu_ticks[i];
+		sum += delta[i];
+	}
+	if (sum == 0) {
+		return;
+	}
+	emmc_log_dec("NEMMC load user % ", (delta[CPU_STATE_USER] + delta[CPU_STATE_NICE]) * 100 / sum);
+	emmc_log_dec("NEMMC load sys % ", delta[CPU_STATE_SYSTEM] * 100 / sum);
+	emmc_log_dec("NEMMC load idle % ", delta[CPU_STATE_IDLE] * 100 / sum);
+}
+
+static void
+nemmc_log_memory(void)
+{
+	char runs[320];
+
+	/* package/sirius_cpufreq.c: per cluster the enable bit, table rows, index before and requested (ff = none), the kHz of row 0
+	 * and of the highest non-boost row, then the MHz the hardware currently votes. */
+	if (&sirius_cpufreq_retry) {
+		sirius_cpufreq_retry();
+	}
+	for (unsigned domain = 0; &sirius_cpufreq_report && domain < 2; domain++) {
+		uint32_t state[6], vote = 0;
+
+		if (sirius_cpufreq_report(domain, state, &vote)) {
+			emmc_log_dec("NEMMC cpufreq domain ", domain);
+			emmc_log_hex("NEMMC cpufreq enable/rows/before/request ",
+			    ((uint64_t)state[0] << 48) | ((uint64_t)state[1] << 32) | ((uint64_t)state[2] << 16) | state[3]);
+			emmc_log_dec("NEMMC cpufreq row0 kHz ", state[4]);
+			emmc_log_dec("NEMMC cpufreq best kHz ", state[5]);
+			emmc_log_dec("NEMMC cpufreq vote MHz ", vote);
+		}
+	}
+	emmc_log_hex("NEMMC window base ", gPhysBase);
+	emmc_log_hex("NEMMC window size ", gPhysSize);
+	if (PE_parse_boot_arg_str("db-runs", runs, sizeof(runs))) {
+		emmc_log("NEMMC db-runs ");
+		emmc_log(runs);
+		emmc_log("\n");
+	} else {
+		emmc_log("NEMMC db-runs none\n");
+	}
+	/* The final UEFI memory map DarwinBoot wrote into /chosen/darwinboot-efi-map (a board.toml placeholder): the ranges that
+	 * keep DRAM out of the one contiguous window, as start+bytes, EFI memory type and descriptors merged. The first three
+	 * memory reports only; the heartbeat mirrors the log buffer anyway. */
+	static unsigned efi_map_reports;
+	if (efi_map_reports < 3) {
+		efi_map_reports++;
+		IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane);
+		OSData *map = chosen ? OSDynamicCast(OSData, chosen->getProperty("darwinboot-efi-map")) : nullptr;
+		if (map && map->getLength() == 32 * 24) {
+			const uint8_t *bytes = static_cast<const uint8_t *>(map->getBytesNoCopy());
+			for (unsigned i = 0; i < 32; ++i) {
+				uint64_t start, size;
+				uint32_t type, merged;
+				memcpy(&start, bytes + i * 24, 8);
+				memcpy(&size, bytes + i * 24 + 8, 8);
+				memcpy(&type, bytes + i * 24 + 16, 4);
+				memcpy(&merged, bytes + i * 24 + 20, 4);
+				if (!size) {
+					break;
+				}
+				char line[96];
+				snprintf(line, sizeof(line), "NEMMC efi-map %llx+%llx type %u x%u\n", (unsigned long long)start,
+				    (unsigned long long)size, type, merged);
+				emmc_log(line);
+			}
+		} else {
+			emmc_log("NEMMC efi-map none\n");
+		}
+		OSSafeReleaseNULL(chosen);
 	}
 }
 
@@ -258,6 +405,27 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 		emmc_log_dec("NEMMC probe init returns ", sirius_init_syscall_returns);
 		emmc_log_dec("NEMMC probe init asts ", sirius_init_asts);
 		emmc_log_dec("NEMMC probe init faults ", sirius_fault_total);
+		if (&native_legacy_copy_n && &sirius_fb_read && (nemmc_heartbeats % 4) == 0) {
+			uint64_t frequency = 0, copies = native_legacy_copy_n;
+
+			__asm__ volatile ("mrs %0, cntfrq_el0" : "=r"(frequency));
+			if (frequency == 0) {
+				frequency = 19200000;
+			}
+			emmc_log_dec("NEMMC fb copies ", copies);
+			emmc_log_dec("NEMMC fb copy last us ", native_legacy_copy_last * 1000000 / frequency);
+			emmc_log_dec("NEMMC fb copy mean us ", copies ? native_legacy_copy_sum / copies * 1000000 / frequency : 0);
+			emmc_log_dec("NEMMC fb copy max us ", native_legacy_copy_max * 1000000 / frequency);
+			emmc_log_dec("NEMMC fb read last us ", sirius_fb_read[0] * 1000000 / frequency);
+			emmc_log_dec("NEMMC fb reads timed ", sirius_fb_read[1]);
+			emmc_log_hex("NEMMC fb cache source/scanout/wimg ",
+			    ((uint64_t)sirius_fb_source_cache << 40) | ((uint64_t)sirius_fb_scanout_cache << 20) | sirius_fb_source_wimg);
+		}
+		if ((nemmc_heartbeats % 16) == 0) {
+			nemmc_log_cpu_clock();
+			nemmc_log_memory();
+			nemmc_log_load();
+		}
 		{
 			static int reported;
 
@@ -379,6 +547,7 @@ struct NemmcRequest {
 	UInt64 base;
 	UInt64 block;
 	UInt64 count;
+	bool write;
 	IOStorageCompletion completion;
 	NemmcRequest *next;
 };
@@ -394,8 +563,6 @@ static NemmcRequest *nemmc_pending_head;
 static NemmcRequest *nemmc_pending_tail;
 static volatile uint32_t nemmc_queue_busy;
 static uint8_t *nemmc_bounce;
-/* The payload's Data seed, published as a RAM window by prepareDataSeed(). */
-static uint64_t nemmc_data_seed_bytes;
 
 /* A dedicated kernel thread drains the queue. The thread call this used to run on is dispatched
  * in interrupt context: the completion, IOMemoryDescriptor::writeBytes() and the transfer itself
@@ -435,28 +602,42 @@ nemmc_drain_queue(void)
 		}
 		IOReturn result = kIOReturnSuccess;
 		/* In runs of up to sirius_emmc_run_blocks: each run is one multi-block command, where a
-		 * block at a time was one command per 512 bytes at the identification clock. The bounce
-		 * buffer is shared by every request and requests are drained on their callers' threads,
-		 * so it stays under the transport lock until the copy into the request's memory is done
-		 * (released in between, a second reader refilled it first and the first request received
-		 * the other one's blocks). */
+		 * block at a time was one command per 512 bytes. */
 		for (UInt64 done = 0; done < request->count;) {
 			UInt64 run = request->count - done;
 			if (run > sirius_emmc_run_blocks) {
 				run = sirius_emmc_run_blocks;
 			}
 			UInt64 lba = request->base + request->block + done;
+			/* The bounce buffer is shared by every request, and requests are drained on their
+			 * callers' threads, so it stays under the transport lock until the copy into the
+			 * request's memory is done. Released between the read and the copy, a second reader
+			 * refilled it first and the first request received the other one's blocks: APFS
+			 * reported data hash mismatches on the sealed SystemOS volume once userland read in
+			 * parallel. The request's memory is prepared (wired) for the I/O, so the copy does not
+			 * fault back into this driver. */
 			nemmc_transport_lock_acquire();
 			nemmc_inflight_lba = lba;
 			nemmc_inflight_count = (uint32_t)request->count;
 			nemmc_inflight_beat = nemmc_heartbeats;
-			int read = sirius_emmc_read_blocks(lba, (unsigned)run, nemmc_bounce);
-			UInt64 copied = read == 0 ? request->buffer->writeBytes(done * EMMC_BLOCK_SIZE,
-			    nemmc_bounce, run * EMMC_BLOCK_SIZE) : 0;
+			int read;
+			UInt64 copied;
+			if (request->write) {
+				/* The other direction, same rule: the bounce stays under the lock from the
+				 * copy out of the request to the end of the write. */
+				copied = request->buffer->readBytes(done * EMMC_BLOCK_SIZE, nemmc_bounce,
+				    run * EMMC_BLOCK_SIZE);
+				read = copied == run * EMMC_BLOCK_SIZE ?
+				    sirius_emmc_write_blocks(lba, (unsigned)run, nemmc_bounce) : -1;
+			} else {
+				read = sirius_emmc_read_blocks(lba, (unsigned)run, nemmc_bounce);
+				copied = read == 0 ? request->buffer->writeBytes(done * EMMC_BLOCK_SIZE, nemmc_bounce,
+				    run * EMMC_BLOCK_SIZE) : 0;
+			}
 			nemmc_transport_lock_release();
 			nemmc_blocks += (uint32_t)run;
 			if (read != 0) {
-				emmc_log_hex("NEMMC transfer failed lba ", lba);
+				emmc_log_hex(request->write ? "NEMMC write failed lba " : "NEMMC transfer failed lba ", lba);
 				result = kIOReturnIOError;
 				break;
 			}
@@ -508,27 +689,37 @@ class NativeEmmcBlock : public IOBlockStorageDevice
 	UInt64 fBlocks;
 	IOLock *fLock;
 	uint8_t *fBounce;
-	/* Set for the Data seed: the window is the payload's RAM disk, served by memory copy. */
+	/* Non-null for the Data window: the loader-placed seed in RAM, served read-write. */
 	uint8_t *fRam;
+	/* The persistent Data window: eMMC blocks served read-write (the transport fences the writes). */
+	bool fWritable;
+
+	IOReturn ramReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt64 count,
+	    IOStorageCompletion *completion);
 
 public:
 	bool init(UInt64 base, UInt64 blocks);
-	void useRam(uint8_t *ram) { fRam = ram; }
-	uint8_t *ram() const { return fRam; }
-	bool isData() const { return fRam != nullptr; }
 	bool start(IOService *provider) override;
 	void free() override;
+	void useRam(uint8_t *ram);
+	void useWritable();
+	uint8_t *ram() const { return fRam; }
+	bool isData() const { return fRam != nullptr || fWritable; }
+	UInt64 blocks() const { return fBlocks; }
 
 	IOReturn doEjectMedia() override { return kIOReturnUnsupported; }
 	IOReturn doFormatMedia(UInt64) override { return kIOReturnNotWritable; }
 	UInt32 doGetFormatCapacities(UInt64 *, UInt32) const override { return 0; }
 	char *getVendorString() override { return const_cast<char *>("Xiaomi"); }
-	char *getProductString() override { return const_cast<char *>("sirius eMMC"); }
+	char *getProductString() override
+	{
+		return const_cast<char *>(fRam ? "sirius Data seed" : fWritable ? "sirius eMMC Data" : "sirius eMMC");
+	}
 	char *getRevisionString() override { return const_cast<char *>("1.0"); }
 	char *getAdditionalDeviceInfoString() override
 	{
-		return const_cast<char *>(isData() ? "payload Data seed, RAM, read-write"
-		                                   : "SDCC1 eMMC, read-only, ADMA2");
+		return const_cast<char *>(fRam ? "RAM, read-write, lost at power off" :
+		    fWritable ? "SDCC1 eMMC, read-write Data window, ADMA2" : "SDCC1 eMMC, read-only, ADMA2");
 	}
 	IOReturn reportBlockSize(UInt64 *value) override
 	{
@@ -563,7 +754,7 @@ public:
 		*value = !isData();
 		return kIOReturnSuccess;
 	}
-	IOReturn doSynchronizeCache() override { return kIOReturnSuccess; }
+	IOReturn doSynchronizeCache() override;
 	IOReturn doSynchronize(UInt64, UInt64, IOOptionBits) override { return doSynchronizeCache(); }
 	IOReturn getWriteCacheState(bool *value) override
 	{
@@ -581,21 +772,20 @@ OSDefineMetaClassAndStructors(NativeEmmcBlock, IOBlockStorageDevice);
 bool
 NativeEmmcBlock::init(UInt64 base, UInt64 blocks)
 {
-	/* One request is one run of single-block CMD17 reads at the card's current clock, which takes
-	 * tens of milliseconds per block; without this limit IOStorageFamily hands over a whole
-	 * megabyte at once and the drain is busy with it for minutes. */
 	emmc_log("NativeEmmc: step 7b block base init\n");
 	if (!IOBlockStorageDevice::init(nullptr)) {
 		return false;
 	}
 	emmc_log("NativeEmmc: step 7c block base init done\n");
-	/* One request is one run of single-block CMD17 reads at the card's current clock, tens of
-	 * milliseconds per block; without this cap IOStorageFamily hands over a whole megabyte at
-	 * once and the drain is busy with that single request for minutes. */
-	setProperty("IOMaximumBlockCountRead", 256, sirius_emmc_run_blocks);
+	/* The cap once kept a request from occupying the drain for minutes, when every block was its
+	 * own CMD17 at the identification clock. The transfer now reads 256-block runs at the fast
+	 * clock, so the cap only has to be a whole number of runs: 1 MiB, four runs, the chunk the
+	 * kernel's signature hash cache reads the dyld shared cache in. */
+	setProperty("IOMaximumBlockCountRead", 2048, 64);
 	fBase = base;
 	fBlocks = blocks;
 	fRam = nullptr;
+	fWritable = false;
 	fLock = IOLockAlloc();
 	fBounce = (uint8_t *)IOMalloc(EMMC_BLOCK_SIZE);
 	if (!fLock || !fBounce) {
@@ -615,6 +805,51 @@ NativeEmmcBlock::start(IOService *provider)
 	registerService();
 	emmc_log("NativeEmmc: step 9c block registered\n");
 	return true;
+}
+
+void
+NativeEmmcBlock::useRam(uint8_t *ram)
+{
+	fRam = ram;
+	setProperty("IOMaximumBlockCountWrite", 2048, 64);
+}
+
+void
+NativeEmmcBlock::useWritable()
+{
+	fWritable = true;
+	setProperty("IOMaximumBlockCountWrite", 2048, 64);
+}
+
+/* APFS asks for this at its checkpoints; with the card's cache on, that is when written blocks
+ * have to reach the flash. */
+IOReturn
+NativeEmmcBlock::doSynchronizeCache()
+{
+	if (!fWritable) {
+		return kIOReturnSuccess;
+	}
+	nemmc_transport_lock_acquire();
+	int flushed = sirius_emmc_flush();
+	nemmc_transport_lock_release();
+	return flushed == 0 ? kIOReturnSuccess : kIOReturnIOError;
+}
+
+/* The Data window: copies between the request's memory and the seed in RAM, completed inline the
+ * way the eMMC requests are (on the caller's work loop). */
+IOReturn
+NativeEmmcBlock::ramReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt64 count,
+    IOStorageCompletion *completion)
+{
+	UInt64 bytes = count * EMMC_BLOCK_SIZE;
+	uint8_t *at = fRam + block * EMMC_BLOCK_SIZE;
+	IOLockLock(fLock);
+	UInt64 done = buffer->getDirection() == kIODirectionOut ? buffer->readBytes(0, at, bytes)
+	    : buffer->writeBytes(0, at, bytes);
+	IOLockUnlock(fLock);
+	IOReturn result = done == bytes ? kIOReturnSuccess : kIOReturnIOError;
+	completion->action(completion->target, completion->parameter, result, done);
+	return kIOReturnSuccess;
 }
 
 void
@@ -644,25 +879,14 @@ NativeEmmcBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt
 		return kIOReturnBadArgument;
 	}
 	if (fRam != nullptr) {
-		/* The Data seed: plain memory copy, both directions. Nothing is written back at power
-		 * off (the RAM disk is not persistent), so writes are accepted and lost with the boot. */
-		if (buffer->getDirection() != kIODirectionIn && buffer->getDirection() != kIODirectionOut) {
+		if ((buffer->getDirection() != kIODirectionIn && buffer->getDirection() != kIODirectionOut) ||
+		    buffer->getLength() < count * EMMC_BLOCK_SIZE) {
 			return kIOReturnBadArgument;
 		}
-		uint8_t *at = fRam + block * EMMC_BLOCK_SIZE;
-		IOReturn result = kIOReturnSuccess;
-		if (buffer->getDirection() == kIODirectionIn) {
-			if (buffer->writeBytes(0, at, count * EMMC_BLOCK_SIZE) != count * EMMC_BLOCK_SIZE) {
-				result = kIOReturnIOError;
-			}
-		} else if (buffer->readBytes(0, at, count * EMMC_BLOCK_SIZE) != count * EMMC_BLOCK_SIZE) {
-			result = kIOReturnIOError;
-		}
-		completion->action(completion->target, completion->parameter, result,
-		    result == kIOReturnSuccess ? count * EMMC_BLOCK_SIZE : 0);
-		return kIOReturnSuccess;
+		return ramReadWrite(buffer, block, count, completion);
 	}
-	if (buffer->getDirection() != kIODirectionIn) {
+	bool write = buffer->getDirection() == kIODirectionOut;
+	if (buffer->getDirection() != kIODirectionIn && !(write && fWritable)) {
 		emmc_log_dec("NEMMC refuse direction ", (uint64_t)buffer->getDirection());
 		return kIOReturnNotWritable;
 	}
@@ -691,6 +915,7 @@ NativeEmmcBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt
 	request->base = fBase;
 	request->block = block;
 	request->count = count;
+	request->write = write;
 	request->completion = *completion;
 	request->next = nullptr;
 
@@ -725,7 +950,9 @@ class NativeEmmc : public IOService
 	NativeEmmcBlock *fWindow[4];
 	char fWindowName[4][33];
 	unsigned fWindows;
+	UInt64 fImageBytes;     /* the root image's size from the SHNGROOT manifest */
 	int prepareWindows(UInt64 blocks);
+	bool prepareDataWindow(UInt64 blocks);
 	void prepareDataSeed();
 
 public:
@@ -745,6 +972,7 @@ OSDefineMetaClassAndStructors(NativeEmmc, IOService);
  * images of the IPSW, so publishing each as its own read-only block device is what lets the
  * original APFS mount the system volume; this driver never interprets the images. */
 #define USERDATA_FIRST_LBA 17301504ull   /* board.toml [userdata] first_lba */
+#define USERDATA_LAST_LBA  122142686ull  /* board.toml [userdata] last_lba */
 #define MANIFEST_BYTES     4096u
 
 int
@@ -781,6 +1009,10 @@ NativeEmmc::prepareWindows(UInt64 blocks)
 	    ((uint32_t)manifest[14] << 16) | ((uint32_t)manifest[15] << 24);
 	emmc_log_dec("NEMMC manifest version ", version);
 	emmc_log_dec("NEMMC manifest windows ", count);
+	fImageBytes = 0;
+	for (unsigned i = 0; i < 8; i++) {
+		fImageBytes |= (UInt64)manifest[16 + i] << (8 * i);
+	}
 	if (count > 4) {
 		count = 4;
 	}
@@ -833,8 +1065,72 @@ NativeEmmc::prepareWindows(UInt64 blocks)
 	return (int)fWindows;
 }
 
+/* The persistent Data volume: an APFS container written into userdata right behind the root image,
+ * at the next MiB (scripts/make-data-window-image.py, flashed once with fastboot). Published
+ * read-write only with sirius-data-write=1 and only when an APFS container superblock (NXSB)
+ * starts there; the window is the container's own size, and the transport refuses writes outside
+ * it. Returns whether the window was prepared. */
+bool
+NativeEmmc::prepareDataWindow(UInt64 blocks)
+{
+	unsigned enabled = 0;
+	if (!PE_parse_boot_argn("sirius-data-write", &enabled, sizeof(enabled)) || enabled != 1) {
+		emmc_log("NEMMC data window: writes disabled (sirius-data-write=1 to enable)\n");
+		return false;
+	}
+	if (fImageBytes == 0 || fWindows >= 4) {
+		return false;
+	}
+	UInt64 first = USERDATA_FIRST_LBA + (fImageBytes + 0xfffffu) / 0x100000u * 2048u;
+	static uint8_t head[EMMC_BLOCK_SIZE];
+	nemmc_transport_lock_acquire();
+	int read = sirius_emmc_read_block(first, head);
+	nemmc_transport_lock_release();
+	if (read != 0) {
+		emmc_log_dec("NEMMC data window: read failed at lba ", first);
+		return false;
+	}
+	/* nx_superblock_t: the object header, then nx_magic, nx_block_size and nx_block_count. */
+	uint32_t blockSize = (uint32_t)head[36] | ((uint32_t)head[37] << 8) | ((uint32_t)head[38] << 16) |
+	    ((uint32_t)head[39] << 24);
+	uint64_t containerBlocks = 0;
+	for (unsigned i = 0; i < 8; i++) {
+		containerBlocks |= (uint64_t)head[40 + i] << (8 * i);
+	}
+	if (head[32] != 'N' || head[33] != 'X' || head[34] != 'S' || head[35] != 'B' || blockSize != 4096 ||
+	    containerBlocks == 0) {
+		emmc_log_dec("NEMMC data window: no APFS container at lba ", first);
+		return false;
+	}
+	UInt64 windowBlocks = containerBlocks * (blockSize / EMMC_BLOCK_SIZE);
+	if (first + windowBlocks > USERDATA_LAST_LBA + 1 || first + windowBlocks > blocks) {
+		emmc_log_dec("NEMMC data window: container runs past userdata, blocks ", windowBlocks);
+		return false;
+	}
+	if (sirius_emmc_set_write_window(first, windowBlocks) != 0) {
+		emmc_log("NEMMC data window: the transport refused the write window\n");
+		return false;
+	}
+	NativeEmmcBlock *window = new NativeEmmcBlock;
+	if (window == nullptr || !window->init(first, windowBlocks)) {
+		emmc_log("NEMMC data window: allocation failed\n");
+		return false;
+	}
+	window->useWritable();
+	if (!window->attach(this)) {
+		emmc_log("NEMMC data window: attach failed\n");
+		window->release();
+		return false;
+	}
+	strlcpy(fWindowName[fWindows], "Data", sizeof(fWindowName[0]));
+	fWindow[fWindows++] = window;
+	emmc_log_dec("NEMMC data window lba ", first);
+	emmc_log_dec("NEMMC data window blocks ", windowBlocks);
+	return true;
+}
+
 /* The Data volume's seed, when the payload carries one (unixnu build payload --data-ramdisk):
- * DarwinBoot copies it into the kernel window and names it in /chosen/memory-map/RAMDisk
+ * DarwinBoot copies it into the kernel's window and names it in /chosen/memory-map/RAMDisk
  * (physical address, size). It becomes a read-write RAM window next to the eMMC ones, APFS
  * publishes its volume, and the owner Data mount finds that through native_ram_block_volume_seed()
  * below. Nothing is written back: the volume starts from the seed at every boot. */
@@ -877,7 +1173,6 @@ NativeEmmc::prepareDataSeed()
 	}
 	strlcpy(fWindowName[fWindows], "Data", sizeof(fWindowName[0]));
 	fWindow[fWindows++] = window;
-	nemmc_data_seed_bytes = bytes;
 	emmc_log_hex("NEMMC data seed at ", physical);
 	emmc_log_dec("NEMMC data seed bytes ", bytes);
 }
@@ -984,12 +1279,18 @@ NativeEmmc::start(IOService *provider)
 	 * implementation only publishes windows it has verified first. sirius_emmc_win=1 enables the
 	 * experiment without rebuilding the kernel. */
 	unsigned windows = 0;
+	fImageBytes = 0;
+	bool persistent = false;
 	if (PE_parse_boot_argn("sirius_emmc_win", &windows, sizeof(windows)) && windows != 0) {
 		emmc_log_dec("NEMMC windows prepared ", (uint64_t)prepareWindows(blocks));
+		persistent = prepareDataWindow(blocks);
 	} else {
 		emmc_log("NEMMC windows: disabled (sirius_emmc_win=1 to publish)\n");
 	}
-	prepareDataSeed();
+	/* One Data volume: the RAM seed only stands in when there is no persistent one. */
+	if (!persistent) {
+		prepareDataSeed();
+	}
 	emmc_log("NativeEmmc: step 10 register the driver\n");
 	registerService();
 	emmc_log("NativeEmmc: step 11 done\n");
@@ -1021,113 +1322,11 @@ NativeEmmc::stop(IOService *provider)
 	IOService::stop(provider);
 }
 
-/* The owner Data mount (offline-owner-systemos-mount.patch, kern_exec.c built with
- * XNU_SIRIUS_DATA_SEED) asks for the device of the Data volume and the seed behind it: the single
- * APFS volume on the RAM window prepareDataSeed() published. Every seed build formats a new volume
- * with a new UUID, so a volume whose UUID differs from the kernel's (CONFIG_XNU_OWNER_DATA_VOLUME_UUID)
- * is still taken and the difference is reported, rather than every new seed needing a new kernel.
- * base is the seed's kernel address; the digest stays zero, as nothing on this board checks it. */
-extern "C" int
-native_ram_block_volume_seed(const char *uuid, dev_t *device, char *path, size_t size, uint64_t *base,
-    uint64_t *bytes, uint8_t *digest)
-{
-	if (uuid == nullptr || device == nullptr || path == nullptr || size < 6 || strlen(uuid) != 36 ||
-	    base == nullptr || bytes == nullptr || digest == nullptr) {
-		return 0;
-	}
-	*base = 0;
-	*bytes = 0;
-	memset(digest, 0, 32);
-	/* APFS publishes the volume when the container is attached, before this mount runs; wait for it. */
-	for (unsigned attempt = 0; attempt < 100; attempt++) {
-		OSDictionary *matching = IOService::serviceMatching("IOMedia");
-		OSIterator *iterator = matching != nullptr ? IOService::getMatchingServices(matching) : nullptr;
-		OSSafeReleaseNULL(matching);
-		unsigned matches = 0;
-		dev_t candidate = (dev_t)0;
-		char candidatePath[64] = {};
-		char candidateVolume[37] = {};
-		uint8_t *ram = nullptr;
-		while (iterator != nullptr) {
-			IOService *media = OSDynamicCast(IOService, iterator->getNextObject());
-			if (media == nullptr) {
-				break;
-			}
-			/* The volume on a RAM window: its provider chain reaches a NativeEmmcBlock with a
-			 * RAM buffer, and the volume (not the whole disk, which APFS also publishes) carries
-			 * the UUID. */
-			uint8_t *under = nullptr;
-			unsigned depth = 0;
-			for (IOService *provider = media; provider != nullptr && depth++ < 64;
-			    provider = provider->getProvider()) {
-				NativeEmmcBlock *block = OSDynamicCast(NativeEmmcBlock, provider);
-				if (block != nullptr) {
-					under = block->ram();
-					break;
-				}
-			}
-			OSString *identity = OSDynamicCast(OSString, media->getProperty("UUID"));
-			if (under == nullptr || identity == nullptr) {
-				continue;
-			}
-			if (++matches != 1) {
-				break;
-			}
-			OSString *name = OSDynamicCast(OSString, media->getProperty("BSD Name"));
-			OSNumber *major = OSDynamicCast(OSNumber, media->getProperty("BSD Major"));
-			OSNumber *minor = OSDynamicCast(OSNumber, media->getProperty("BSD Minor"));
-			if (name == nullptr || major == nullptr || minor == nullptr || name->getLength() == 0 ||
-			    name->getLength() >= sizeof(candidatePath) - 6 || name->getLength() >= size - 6 ||
-			    major->unsigned64BitValue() > 255 || minor->unsigned64BitValue() > 0xffffff) {
-				continue;
-			}
-			candidate = (dev_t)makedev(major->unsigned32BitValue(), minor->unsigned32BitValue());
-			snprintf(candidatePath, sizeof(candidatePath), "/dev/%s", name->getCStringNoCopy());
-			strlcpy(candidateVolume, identity->getCStringNoCopy(), sizeof(candidateVolume));
-			ram = under;
-		}
-		OSSafeReleaseNULL(iterator);
-		if (matches == 1 && candidate != (dev_t)0 && ram != nullptr) {
-			*device = candidate;
-			strlcpy(path, candidatePath, size);
-			*base = (uint64_t)(uintptr_t)ram;
-			/* The window is a RAM disk holding the seed: prepareDataSeed() recorded its size. */
-			*bytes = nemmc_data_seed_bytes;
-			if (strcmp(candidateVolume, uuid) != 0) {
-				emmc_log("NEMMC data volume is ");
-				emmc_log(candidateVolume);
-				emmc_log(", the kernel names ");
-				emmc_log(uuid);
-				emmc_log("\n");
-			}
-			emmc_log("NEMMC data volume ");
-			emmc_log(path);
-			emmc_log("\n");
-			return 1;
-		}
-		IOSleep(100);
-	}
-	emmc_log("NEMMC data volume: no RAM volume published\n");
-	return 0;
-}
-
-/* The GPU addon in the payload (scripts/make-gpu-addon.py) is installed by kern_exec.c through
- * this symbol (zzy-native-gpu-addon-mount.patch, declared weak_import there). RamBlock provides it
- * on sheng; this board ships no addon, so the answer is "none" and the installer returns at once. */
-extern "C" int
-native_ram_block_gpu_addon(const uint8_t **data, uint64_t *bytes)
-{
-	(void)data;
-	(void)bytes;
-	return 0;
-}
-
 /* The owner SystemOS mount in kern_exec.c (offline-owner-systemos-mount.patch, built here with
  * XNU_BRINGUP_OWNER_CACHE) mounts the SystemOS cryptex as a union over / before launchd starts, so
- * dyld finds its shared cache; without it shared_region_check_np returns ENOMEM and dyld stops.
- * The mount asks the block driver to authorize the root and to name the device of the SystemOS
- * volume. These eMMC windows have no owner policy, so both answers are only given with the
- * explicit boot argument sirius-allow-unverified=1, as the uke port does for its UFS root. */
+ * dyld finds its shared cache. It asks the block driver to authorize the root and to name the device
+ * of the SystemOS volume. The eMMC windows have no owner policy, so both answers are only given with
+ * the explicit boot argument sirius-allow-unverified=1, as the uke port does for its UFS root. */
 static int
 nemmc_allow_unverified(void)
 {
@@ -1147,67 +1346,174 @@ native_verified_block_root_authorized(dev_t device)
 	return nemmc_allow_unverified();
 }
 
-/* The IOMedia whose UUID is uuid, once APFS has published it: its BSD device and node. APFS
- * publishes volume media when the container is attached, and the mount runs before launchd, so
- * this waits up to ten seconds for the volume to appear. */
-extern "C" int
-native_verified_block_volume_device(const char *uuid, dev_t *device, char *path, size_t size)
+/* The Data window (the RAM seed or the persistent eMMC window) a media object sits on, or nullptr
+ * for one on a read-only eMMC window. */
+static NativeEmmcBlock *
+nemmc_data_window_of(IOService *media)
 {
-	if (uuid == nullptr || device == nullptr || path == nullptr || size < 6 || strlen(uuid) != 36) {
-		return 0;
+	unsigned depth = 0;
+	for (IOService *provider = media; provider != nullptr && depth++ < 64; provider = provider->getProvider()) {
+		NativeEmmcBlock *block = OSDynamicCast(NativeEmmcBlock, provider);
+		if (block != nullptr) {
+			return block->isData() ? block : nullptr;
+		}
 	}
-	*device = (dev_t)0;
+	return nullptr;
+}
+
+/* The IOMedia whose UUID is uuid or, with uuid nullptr, the one APFS volume on the Data window (a
+ * slice with a UUID), once APFS has published it: its BSD device and node, through ram the Data
+ * window it sits on (nullptr for a read-only window), and through volume its UUID. APFS publishes
+ * volume media after the root mounts, and launchd starts right after that, so this waits up to ten
+ * seconds. */
+static bool
+nemmc_find_volume(const char *uuid, dev_t *device, char *path, size_t size, NativeEmmcBlock **ram,
+    char *volume = nullptr)
+{
+	*device = NODEV;
 	path[0] = '\0';
-	if (!nemmc_allow_unverified()) {
-		emmc_log("NEMMC owner volume refused: no sirius-allow-unverified\n");
-		return 0;
-	}
+	*ram = nullptr;
 	for (unsigned attempt = 0; attempt < 100; attempt++) {
 		OSDictionary *matching = IOService::serviceMatching("IOMedia");
-		OSDictionary *properties = OSDictionary::withCapacity(1);
-		OSString *wanted = OSString::withCString(uuid);
-		bool ready = matching != nullptr && properties != nullptr && wanted != nullptr &&
-		    properties->setObject("UUID", wanted) && matching->setObject("IOPropertyMatch", properties);
-		OSSafeReleaseNULL(wanted);
-		OSSafeReleaseNULL(properties);
+		bool ready = matching != nullptr;
+		if (ready && uuid != nullptr) {
+			OSDictionary *properties = OSDictionary::withCapacity(1);
+			OSString *wanted = OSString::withCString(uuid);
+			ready = properties != nullptr && wanted != nullptr && properties->setObject("UUID", wanted) &&
+			    matching->setObject("IOPropertyMatch", properties);
+			OSSafeReleaseNULL(wanted);
+			OSSafeReleaseNULL(properties);
+		}
 		OSIterator *iterator = ready ? IOService::getMatchingServices(matching) : nullptr;
 		OSSafeReleaseNULL(matching);
-		dev_t candidate = (dev_t)0;
+		dev_t candidate = NODEV;
 		char candidatePath[64] = {};
+		char candidateVolume[37] = {};
+		NativeEmmcBlock *window = nullptr;
 		unsigned matches = 0;
+		bool found = false;
 		while (iterator != nullptr) {
 			IOService *media = OSDynamicCast(IOService, iterator->getNextObject());
 			if (media == nullptr) {
 				break;
 			}
+			OSString *identity = OSDynamicCast(OSString, media->getProperty("UUID"));
+			NativeEmmcBlock *under = nemmc_data_window_of(media);
+			if (uuid == nullptr && (under == nullptr || identity == nullptr ||
+			    media->getProperty("Whole") == kOSBooleanTrue)) {
+				continue;
+			}
 			if (++matches != 1) {
+				found = false;
 				break;
 			}
-			OSString *identity = OSDynamicCast(OSString, media->getProperty("UUID"));
 			OSString *name = OSDynamicCast(OSString, media->getProperty("BSD Name"));
 			OSNumber *major = OSDynamicCast(OSNumber, media->getProperty("BSD Major"));
 			OSNumber *minor = OSDynamicCast(OSNumber, media->getProperty("BSD Minor"));
-			if (identity == nullptr || strcmp(identity->getCStringNoCopy(), uuid) || name == nullptr ||
-			    major == nullptr || minor == nullptr || name->getLength() == 0 ||
+			if (name == nullptr || major == nullptr || minor == nullptr || name->getLength() == 0 ||
 			    name->getLength() >= sizeof(candidatePath) - 6 || name->getLength() >= size - 6 ||
 			    major->unsigned64BitValue() > 255 || minor->unsigned64BitValue() > 0xffffff) {
 				continue;
 			}
 			candidate = (dev_t)makedev(major->unsigned32BitValue(), minor->unsigned32BitValue());
 			snprintf(candidatePath, sizeof(candidatePath), "/dev/%s", name->getCStringNoCopy());
+			strlcpy(candidateVolume, identity != nullptr ? identity->getCStringNoCopy() : "",
+			    sizeof(candidateVolume));
+			window = under;
+			found = true;
 		}
 		OSSafeReleaseNULL(iterator);
-		if (matches == 1 && candidate != (dev_t)0) {
+		if (found && matches == 1) {
 			*device = candidate;
 			strlcpy(path, candidatePath, size);
-			emmc_log("NEMMC owner volume ");
-			emmc_log(path);
-			emmc_log("\n");
-			return 1;
+			*ram = window;
+			if (volume != nullptr) {
+				strlcpy(volume, candidateVolume, 37);
+			}
+			return true;
 		}
 		IOSleep(100);
 	}
-	emmc_log("NEMMC owner volume not found\n");
+	return false;
+}
+
+extern "C" int
+native_verified_block_volume_device(const char *uuid, dev_t *device, char *path, size_t size)
+{
+	if (uuid == nullptr || device == nullptr || path == nullptr || size < 6 || strlen(uuid) != 36) {
+		return 0;
+	}
+	*device = NODEV;
+	path[0] = '\0';
+	if (!nemmc_allow_unverified()) {
+		emmc_log("NEMMC owner volume refused: no sirius-allow-unverified\n");
+		return 0;
+	}
+	NativeEmmcBlock *ram;
+	if (!nemmc_find_volume(uuid, device, path, size, &ram)) {
+		emmc_log("NEMMC owner volume not found\n");
+		return 0;
+	}
+	emmc_log("NEMMC owner volume ");
+	emmc_log(path);
+	emmc_log("\n");
+	return 1;
+}
+
+/* The owner Data mount (offline-owner-systemos-mount.patch, kern_exec.c built with
+ * XNU_SIRIUS_DATA_SEED) asks for the device of the Data volume and the seed behind it. RamBlock
+ * provides this on other boards; here it is the one APFS volume on NativeEmmc's Data window, the
+ * persistent eMMC window or else the RAM seed, the only places a Data volume can be. Every seed
+ * build formats a new volume with a new UUID, so a volume whose UUID differs from the kernel's
+ * (CONFIG_XNU_OWNER_DATA_VOLUME_UUID) is still taken, and the difference is reported, rather than
+ * every new seed needing a new kernel. base is the RAM seed's kernel address (0 on the eMMC); the
+ * digest stays zero, as nothing on this board checks the seed. */
+extern "C" int
+native_ram_block_volume_seed(const char *uuid, dev_t *device, char *path, size_t size, uint64_t *base,
+    uint64_t *bytes, uint8_t *digest)
+{
+	if (uuid == nullptr || device == nullptr || path == nullptr || size < 6 || strlen(uuid) != 36 ||
+	    base == nullptr || bytes == nullptr || digest == nullptr) {
+		return 0;
+	}
+	*base = 0;
+	*bytes = 0;
+	memset(digest, 0, 32);
+	NativeEmmcBlock *window;
+	char volume[37] = {};
+	if (!nemmc_find_volume(nullptr, device, path, size, &window, volume) || window == nullptr) {
+		*device = NODEV;
+		path[0] = '\0';
+		emmc_log("NEMMC data volume not found on a Data window\n");
+		return 0;
+	}
+	if (strcmp(volume, uuid) != 0) {
+		emmc_log("NEMMC data volume is ");
+		emmc_log(volume);
+		emmc_log(", the kernel names ");
+		emmc_log(uuid);
+		emmc_log("\n");
+	}
+	*base = (uint64_t)(uintptr_t)window->ram();
+	*bytes = window->blocks() * EMMC_BLOCK_SIZE;
+	emmc_log(window->ram() != nullptr ? "NEMMC data volume (RAM) " : "NEMMC data volume (eMMC) ");
+	emmc_log(path);
+	emmc_log("\n");
+	return 1;
+}
+
+/* With the seed path compiled in, kern_exec.c's boot-time GPU addon install also asks the RAM block
+ * provider for /chosen/memory-map/GpuAddon. Its declaration is weak, but the static kernel link
+ * still needs a definition: this board's payload carries no addon, so there is none to report. */
+extern "C" int
+native_ram_block_gpu_addon(const uint8_t **data, uint64_t *bytes)
+{
+	if (data != nullptr) {
+		*data = nullptr;
+	}
+	if (bytes != nullptr) {
+		*bytes = 0;
+	}
 	return 0;
 }
 
@@ -1229,13 +1535,11 @@ sirius_native_emmc_probe(void)
 		return;
 	}
 	if (nemmc_worker == nullptr) {
-		/* One run at a time lands here, so the buffer is a full run (256 blocks). 32-bit ADMA2
-		* reaches only the first 4 GiB and sirius_emmc_read_blocks refuses a page above it, so it
-		* comes from a physically masked allocation: the DarwinBoot window may cross 0x100000000 and
-		* an IOMalloc'd buffer could land there. Kept for the boot like the IOMalloc it replaces. */
+		/* 32-bit ADMA2 reaches only the first 4 GiB, and sirius_emmc_read_blocks refuses a page above it: with a window that
+		 * crosses 0x100000000 an IOMalloc'd bounce could land there, so it comes from a physically masked allocation. Kept for
+		 * the boot like the IOMalloc it replaces. */
 		IOBufferMemoryDescriptor *bounce = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
-		    kIODirectionInOut | kIOMemoryPhysicallyContiguous, sirius_emmc_run_blocks * EMMC_BLOCK_SIZE,
-		    0x00000000fffff000ULL);
+		    kIODirectionInOut | kIOMemoryPhysicallyContiguous, sirius_emmc_run_blocks * EMMC_BLOCK_SIZE, 0x00000000fffff000ULL);
 		nemmc_bounce = bounce ? (uint8_t *)bounce->getBytesNoCopy() : nullptr;
 		if (nemmc_bounce == nullptr) {
 			emmc_log("NativeEmmc: no bounce buffer\n");
@@ -1287,3 +1591,25 @@ sirius_native_emmc_probe(void)
 		emmc_log("NEMMC heartbeat failed\n");
 	}
 }
+
+
+/* ---------------------------------------------------------------------------------------------
+ * Diagnostics this board does not build. The reference driver reads them through weak_import
+ * symbols (cpufreq votes from kits/sirius/sirius_cpufreq.c, the legacy display's framebuffer
+ * counters); the static kernel link still needs a definition, so they answer "nothing to report"
+ * here. They are log-only: no boot path depends on their values.
+ * ------------------------------------------------------------------------------------------- */
+extern "C" int
+sirius_cpufreq_report(unsigned domain, uint32_t state[6], uint32_t *vote_mhz)
+{
+	(void)domain;
+	(void)state;
+	(void)vote_mhz;
+	return 0;
+}
+
+extern "C" void
+sirius_cpufreq_retry(void)
+{
+}
+
