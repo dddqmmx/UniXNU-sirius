@@ -15,7 +15,9 @@
 #include <pexpert/pexpert.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
 #include <kern/thread.h>
+#include <kern/task.h>
 #include <kern/sched_prim.h>
+#include <IOKit/IOBufferMemoryDescriptor.h>
 #include <sys/types.h>
 
 extern "C" {
@@ -1053,7 +1055,14 @@ sirius_native_emmc_probe(void)
 		return;
 	}
 	if (nemmc_worker == nullptr) {
-		nemmc_bounce = (uint8_t *)IOMalloc(EMMC_BLOCK_SIZE);
+		/* One run at a time lands here, so the buffer is a full run (256 blocks). 32-bit ADMA2
+		* reaches only the first 4 GiB and sirius_emmc_read_blocks refuses a page above it, so it
+		* comes from a physically masked allocation: the DarwinBoot window may cross 0x100000000 and
+		* an IOMalloc'd buffer could land there. Kept for the boot like the IOMalloc it replaces. */
+		IOBufferMemoryDescriptor *bounce = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+		    kIODirectionInOut | kIOMemoryPhysicallyContiguous, sirius_emmc_run_blocks * EMMC_BLOCK_SIZE,
+		    0x00000000fffff000ULL);
+		nemmc_bounce = bounce ? (uint8_t *)bounce->getBytesNoCopy() : nullptr;
 		if (nemmc_bounce == nullptr) {
 			emmc_log("NativeEmmc: no bounce buffer\n");
 			return;

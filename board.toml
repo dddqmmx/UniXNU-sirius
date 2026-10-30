@@ -141,6 +141,12 @@ boot-manifest-hash = "5fd2fc139b688ddf071aa815c1ea75d26bcd994a528cf02e365661eab5
 # needs no seed, and chip_id is only used together with one.
 [payload.adt]
 chip_id = "8011"
+# The kernel window DarwinBoot allocates: the kernel (~52 MiB), the Data seed (256 MiB), the ADT
+# and the args travel in it. The default 256 MiB window cannot hold the seed. 2.66 GiB is the size
+# the reference port boots this unit with: DarwinBoot must find it as ONE conventional-memory run
+# of the firmware map, and the runs of this unit (2.73 GiB at 0x9f800000, observed with the
+# reference kernel) are where that fits. A window the firmware cannot supply prints NO WINDOW.
+owned_memory_size = "0xaa000000"
 # The OS volume of the 21H461 image set, so /chosen/root-matching selects the APFS volume the
 # driver's OS window carries. The same value qualifies every device record of this OS profile.
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
