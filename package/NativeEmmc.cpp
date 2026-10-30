@@ -935,6 +935,17 @@ NativeEmmc::stop(IOService *provider)
 	IOService::stop(provider);
 }
 
+/* The GPU addon in the payload (scripts/make-gpu-addon.py) is installed by kern_exec.c through
+ * this symbol (zzy-native-gpu-addon-mount.patch, declared weak_import there). RamBlock provides it
+ * on sheng; this board ships no addon, so the answer is "none" and the installer returns at once. */
+extern "C" int
+native_ram_block_gpu_addon(const uint8_t **data, uint64_t *bytes)
+{
+	(void)data;
+	(void)bytes;
+	return 0;
+}
+
 /* The owner SystemOS mount in kern_exec.c (offline-owner-systemos-mount.patch, built here with
  * XNU_BRINGUP_OWNER_CACHE) mounts the SystemOS cryptex as a union over / before launchd starts, so
  * dyld finds its shared cache; without it shared_region_check_np returns ENOMEM and dyld stops.

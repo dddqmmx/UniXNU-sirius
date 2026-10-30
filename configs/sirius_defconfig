@@ -74,6 +74,15 @@ CONFIG_XNU_OWNER_CACHE_MOUNT=y
 CONFIG_XNU_OWNER_CACHE_STARTUP=y
 CONFIG_XNU_OWNER_UNION_SYSTEMOS=y
 
+# launchd's own boot tasks need a writable /private/var: without one, `mount -P 1` exits 66 and the
+# exit panics the boot. The Data volume comes from the payload's APFS seed (the data-seed workflow
+# builds it on a macOS runner; --data-ramdisk carries it in the /chosen memory map), and the same
+# patch mounts it at /private/var before launchd starts. sirius-owner-data-bringup.patch drops the
+# boot-manifest requirement in the bring-up mode. The UUID is the current 256 MiB seed's volume
+# (release asset data-seed-256mib, owner-data.cdr 8b77be38...); a differing one is reported.
+CONFIG_XNU_OWNER_DATA_MOUNT=y
+CONFIG_XNU_OWNER_DATA_VOLUME_UUID="9399864F-4F91-48FB-BE3E-AA0DFD524229"
+
 # Compile the bsd_init call site of sheng-platform-power.patch so package/SiriusPmgr.cpp can
 # advertise the ApplePMGRNub that AMFI looks for (the target kernelcache stays unmodified).
 CONFIG_XNU_SHENG_PMGR=1

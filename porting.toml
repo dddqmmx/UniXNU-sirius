@@ -44,6 +44,7 @@ findings = [
   "The legacy port set ipad_identity = true; in format 2 the same identity is the OS profile's [adt] tables, so the board only states its deviations.",
   "configs/sirius_defconfig keeps the ARM64 profile's CONFIG_XNU_NATIVE_PAN=y: Kryo 360 implements PSTATE.PAN, the kernel leaves SCTLR_EL1.SPAN clear, so every exception entry from EL0 sets PAN and only the PAN build's copyio clears it; with the flag off the pid 1 exec loops in copyout() of the launchd path (tens of millions of faults, each resolved by vm_fault and taken again).",
   "The Data volume needs an APFS seed built with macOS hdiutil/diskutil (UniXNU's prepare-owner-data-fixture.py), so .github/workflows/data-seed.yml builds it on a hosted macOS runner: 256 MiB for a RAM seed, 8192 MiB for the persistent container. The seed also goes to an encrypted release asset (data-seed-<size>mib) because an artifact download needs a GitHub token the build host does not keep, while a release asset is readable without one.",
+  "configs/sirius_defconfig mounts the payload's APFS Data seed at /private/var before launchd (CONFIG_XNU_OWNER_DATA_MOUNT, UUID 9399864F-... of the 256 MiB seed the data-seed workflow built); launchd's own mount -P 1 task exits 66 without it and the exit panics the boot. [payload] size_mib is 512 so the seed and the kernel fit in one vendor volume.",
 ]
 completion = [
   "status --json resolves the ARM64, sdm710, iPadOS and device layers, prints a non-empty patch order and shows the device package as kits/sirius.",
@@ -491,6 +492,7 @@ findings = [
   "Both loops have the same shape: vm_fault opens the page in thread->map's pmap and returns KERN_SUCCESS, while the CPU keeps taking the fault. AT S1E1W and pmap_find_phys disagree about the physical page behind 0x1000, which points at the CPU running with a pmap that is not the thread's after the exec task switch.",
   "A payload built without --trust-cache leaves the ring reporting no external trust caches found and AMFI kills launchd with namespace 9 (OS_REASON_EXEC) code 8; the same kernel with the bundle present reaches execve activate 0 without an exec-policy line, so that panic is a build-argument slip, not a regression.",
   "The eMMC driver reads in runs (one CMD18 with Auto-CMD12 for up to 256 blocks, the buffer described piece by piece in an ADMA2 table) and climbs the card clock one proven step at a time (sirius_emmc_hs=3: 25, 50, 100 MHz), each step verified against blocks read at the 400 kHz identification rate; the single-block path stays as the fallback the runs were proven against.",
+  "kern_exec.c's GPU-addon installer (zzy-native-gpu-addon-mount.patch) references native_ram_block_gpu_addon, which only RamBlock provided; this board ships no addon, so package/NativeEmmc.cpp answers its absence and the kernel links again.",
 ]
 completion = [
   "Each claimed milestone has a reproducible command, a matching source and image revision and an accessible result.",
