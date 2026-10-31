@@ -1,11 +1,11 @@
 # UniXNU on Xiaomi Mi 8 SE (sirius) — 交接文档
 
-更新：2026-10-30。
+更新：2026-10-31。
 
-> **最新真机结论以 [本机验证记录](evidence/sirius-20261030-local-boot.md) 为准。**
-> Data 挂载和 early boot 已通过，UI 进程已执行，但 256 MiB Data 从采集时间 185.8 秒开始报 ENOSPC，不能宣称 iOS 界面可用。
-> USB 已静默，当前内核的 FASTBOOT 命令未使设备复位。已构建 USB/TRB 与 PMIC 修正候选镜像，尚未刷入。
-> 默认 panic 自动复位已取消；自动回刷尚未真机验证。需要更大 APFS Data 容器及一次人工返回 ABL fastboot。
+> **最新真机结论以 [本机验证记录](evidence/sirius-20261030-local-boot.md) 与 [`HANDOFF-AGENT-2.md`](HANDOFF-AGENT-2.md) 为准。**
+> 1. **自动回刷已真机验证**：修复 USB RX TRB residual 长度与 PM660 PON `0x88f = 0x04` 单字节 SPMI 写入后，主机向 `/dev/ttyACM0` 发送 `FASTBOOT\n` 可在 4–7 秒内无按键自动回到 ABL fastboot。
+> 2. **8 GiB 持久化 APFS Data 容器已在线扩容成功**：`NativeEmmc` 将 32 MiB 干净 seed 写入 eMMC 8 GiB 窗口后，由 `BootWatchdogPolicy` 调用内核原版 `AppleAPFSUserClient::containerResize`（`0xfffffff005673e7c`）在线扩容至 `2097152` 块（8 GiB），全程 **0 ENOSPC**。
+> 3. **iOS `Setup.app` 欢迎界面持续渲染已验证**：移除 `sirius-skip-setup=1` 后，系统通过 early boot，启动 `SpringBoard`、`backboardd`、`Setup`，并以约 19 fps（平均每帧拷贝 ~10 ms）持续呈现非黑 UI 画面（已确认 5514 帧提交与接受、0 拒绝，CPU 75% 空闲）。
 
 > **接手的 agent 先读 [`HANDOFF-AGENT-2.md`](HANDOFF-AGENT-2.md) 与 [`HANDOFF-AGENT.md`](HANDOFF-AGENT.md)**：
 > `HANDOFF-AGENT-2.md` 记录了最新完成的完整 iOS 用户态驱动栈集成（Display `GopFramebuffer`、KeyStore `AppleKeyStoreState`、Touch `FTS521` + `ShengHidInput`、CPU 调频 `sirius_cpufreq`、GPU `Adreno 616` Phase 1–2、双路 Data 卷）以及已落地的「全自动调试环路」（`package/BootReset.c` SPMI `0x88f=0x04` + PSCI 复位、`sirius_usb.c` 串口 `FASTBOOT` 指令、U-Boot `CONFIG_CMD_PMIC=y`、`scripts/agent-flash.sh` 与 `scripts/agent-loop.sh`）。

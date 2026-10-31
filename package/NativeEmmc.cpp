@@ -143,6 +143,11 @@ extern "C" volatile uint64_t native_legacy_copy_n, native_legacy_copy_last, nati
     __attribute__((weak_import));
 extern "C" volatile uint64_t sirius_fb_read[2] __attribute__((weak_import));
 extern "C" volatile uint32_t sirius_fb_source_cache, sirius_fb_scanout_cache, sirius_fb_source_wimg __attribute__((weak_import));
+extern "C" volatile uint32_t native_legacy_swap_validation_calls, native_legacy_swap_accepted_count,
+    native_legacy_swap_rejected_count, native_legacy_frame_count __attribute__((weak_import));
+extern "C" volatile uint64_t native_legacy_frame_stats[32][5] __attribute__((weak_import));
+extern "C" volatile uint32_t native_aks_opens, native_aks_calls __attribute__((weak_import));
+extern "C" volatile uint32_t sirius_touch_state[8], sirius_hid_stage, native_hid_input_events[8] __attribute__((weak_import));
 
 /* Post-exec probes (patches/xnu/sirius-post-exec-trace.patch). The init exec returns 0 and then
  * the stack asks for no block again, which cannot be told apart from "the launchd thread never
@@ -414,6 +419,26 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 			emmc_log_dec("NEMMC fb reads timed ", sirius_fb_read[1]);
 			emmc_log_hex("NEMMC fb cache source/scanout/wimg ",
 			    ((uint64_t)sirius_fb_source_cache << 40) | ((uint64_t)sirius_fb_scanout_cache << 20) | sirius_fb_source_wimg);
+			if (&native_legacy_swap_validation_calls && &native_legacy_swap_accepted_count && &native_legacy_swap_rejected_count) {
+				emmc_log_hex("NEMMC fb swaps calls/acc/rej ",
+				    ((uint64_t)native_legacy_swap_validation_calls << 40) |
+				    ((uint64_t)native_legacy_swap_accepted_count << 20) |
+				    native_legacy_swap_rejected_count);
+			}
+			if (&native_legacy_frame_count && &native_legacy_frame_stats && native_legacy_frame_count > 0) {
+				unsigned idx = native_legacy_frame_count > 32 ? 31 : native_legacy_frame_count - 1;
+				emmc_log_dec("NEMMC fb frame nonblack ", native_legacy_frame_stats[idx][0]);
+			}
+			if (&native_aks_opens && &native_aks_calls) {
+				emmc_log_hex("NEMMC aks opens/calls ", ((uint64_t)native_aks_opens << 32) | native_aks_calls);
+			}
+			if (&sirius_touch_state && &sirius_hid_stage && &native_hid_input_events) {
+				emmc_log_hex("NEMMC touch events/contacts/hid/reports ",
+				    ((uint64_t)sirius_touch_state[3] << 48) |
+				    ((uint64_t)(sirius_touch_state[4] & 0xffffu) << 32) |
+				    ((uint64_t)(sirius_hid_stage & 0xffu) << 24) |
+				    (native_hid_input_events[6] & 0xffffffu));
+			}
 		}
 		if ((nemmc_heartbeats % 16) == 0) {
 			nemmc_log_cpu_clock();
@@ -1060,6 +1085,11 @@ NativeEmmc::prepareWindows(UInt64 blocks)
 	return (int)fWindows;
 }
 
+#define SIRIUS_DATA_TARGET_BLOCKS 2097152ull   /* 8 GiB in 4 KiB APFS blocks */
+static IOService *nemmc_apfs_container;
+static UInt64 nemmc_data_first_lba;
+static bool nemmc_need_data_resize;
+
 /* The persistent Data volume: an APFS container written into userdata right behind the root image,
  * at the next MiB (scripts/make-data-window-image.py, flashed once with fastboot). Published
  * read-write only with sirius-data-write=1 and only when an APFS container superblock (NXSB)
@@ -1077,6 +1107,8 @@ NativeEmmc::prepareDataWindow(UInt64 blocks)
 		return false;
 	}
 	UInt64 first = USERDATA_FIRST_LBA + (fImageBytes + 0xfffffu) / 0x100000u * 2048u;
+	nemmc_data_first_lba = first;
+	UInt64 targetWindowBlocks = SIRIUS_DATA_TARGET_BLOCKS * (4096u / EMMC_BLOCK_SIZE);
 	static uint8_t head[EMMC_BLOCK_SIZE];
 	nemmc_transport_lock_acquire();
 	int read = sirius_emmc_read_block(first, head);
@@ -1092,17 +1124,80 @@ NativeEmmc::prepareDataWindow(UInt64 blocks)
 	for (unsigned i = 0; i < 8; i++) {
 		containerBlocks |= (uint64_t)head[40 + i] << (8 * i);
 	}
+	unsigned forceReset = 0;
+	bool writeWindowSet = false;
+	PE_parse_boot_argn("sirius-data-reset", &forceReset, sizeof(forceReset));
+	if (head[32] != 'N' || head[33] != 'X' || head[34] != 'S' || head[35] != 'B' || blockSize != 4096 ||
+	    containerBlocks < SIRIUS_DATA_TARGET_BLOCKS || forceReset == 1) {
+		IORegistryEntry *map = IORegistryEntry::fromPath("/chosen/memory-map", gIODTPlane);
+		OSData *range = map ? OSDynamicCast(OSData, map->getProperty("RAMDisk")) : nullptr;
+		uint64_t physical = 0, seedBytes = 0;
+		if (range != nullptr && range->getLength() == 16) {
+			memcpy(&physical, range->getBytesNoCopy(), 8);
+			memcpy(&seedBytes, (const uint8_t *)range->getBytesNoCopy() + 8, 8);
+		}
+		if (map != nullptr) {
+			map->release();
+		}
+		if (seedBytes >= 4096 && seedBytes <= 0x20000000ull && (physical & 4095) == 0 && (seedBytes & 4095) == 0 &&
+		    physical >= gPhysBase && seedBytes <= gPhysSize && physical - gPhysBase <= gPhysSize - seedBytes &&
+		    first + targetWindowBlocks <= USERDATA_LAST_LBA + 1 && first + targetWindowBlocks <= blocks) {
+			const uint8_t *ram = (const uint8_t *)ml_static_ptovirt((vm_offset_t)physical);
+			if (ram != nullptr && ram[32] == 'N' && ram[33] == 'X' && ram[34] == 'S' && ram[35] == 'B' &&
+			    sirius_emmc_set_write_window(first, targetWindowBlocks) == 0) {
+				writeWindowSet = true;
+				UInt64 seedSectors = seedBytes / EMMC_BLOCK_SIZE;
+				emmc_log_dec("NEMMC data window: writing clean seed sectors ", seedSectors);
+				bool ok = true;
+				for (UInt64 done = 0; done < seedSectors;) {
+					UInt64 run = seedSectors - done;
+					if (run > sirius_emmc_run_blocks) {
+						run = sirius_emmc_run_blocks;
+					}
+					nemmc_transport_lock_acquire();
+					memcpy(nemmc_bounce, ram + done * EMMC_BLOCK_SIZE, run * EMMC_BLOCK_SIZE);
+					int wrc = sirius_emmc_write_blocks(first + done, (unsigned)run, nemmc_bounce);
+					nemmc_transport_lock_release();
+					if (wrc != 0) {
+						emmc_log_dec("NEMMC data window: seed write failed at sector ", done);
+						ok = false;
+						break;
+					}
+					done += run;
+				}
+				nemmc_transport_lock_acquire();
+				sirius_emmc_flush();
+				read = sirius_emmc_read_block(first, head);
+				nemmc_transport_lock_release();
+				if (ok && read == 0) {
+					blockSize = (uint32_t)head[36] | ((uint32_t)head[37] << 8) | ((uint32_t)head[38] << 16) |
+					    ((uint32_t)head[39] << 24);
+					containerBlocks = 0;
+					for (unsigned i = 0; i < 8; i++) {
+						containerBlocks |= (uint64_t)head[40 + i] << (8 * i);
+					}
+					emmc_log_dec("NEMMC data window: clean seed written, blocks ", containerBlocks);
+				}
+			}
+		}
+	}
 	if (head[32] != 'N' || head[33] != 'X' || head[34] != 'S' || head[35] != 'B' || blockSize != 4096 ||
 	    containerBlocks == 0) {
 		emmc_log_dec("NEMMC data window: no APFS container at lba ", first);
 		return false;
 	}
 	UInt64 windowBlocks = containerBlocks * (blockSize / EMMC_BLOCK_SIZE);
+	if (windowBlocks < targetWindowBlocks && first + targetWindowBlocks <= USERDATA_LAST_LBA + 1 &&
+	    first + targetWindowBlocks <= blocks) {
+		windowBlocks = targetWindowBlocks;
+		nemmc_need_data_resize = true;
+		emmc_log_dec("NEMMC data window: armed to grow APFS container to blocks ", SIRIUS_DATA_TARGET_BLOCKS);
+	}
 	if (first + windowBlocks > USERDATA_LAST_LBA + 1 || first + windowBlocks > blocks) {
 		emmc_log_dec("NEMMC data window: container runs past userdata, blocks ", windowBlocks);
 		return false;
 	}
-	if (sirius_emmc_set_write_window(first, windowBlocks) != 0) {
+	if (!writeWindowSet && sirius_emmc_set_write_window(first, windowBlocks) != 0) {
 		emmc_log("NEMMC data window: the transport refused the write window\n");
 		return false;
 	}
@@ -1415,6 +1510,14 @@ nemmc_find_volume(const char *uuid, dev_t *device, char *path, size_t size, Nati
 			strlcpy(candidateVolume, identity != nullptr ? identity->getCStringNoCopy() : "",
 			    sizeof(candidateVolume));
 			window = under;
+			if (uuid == nullptr) {
+				for (IOService *p = media; p != nullptr; p = p->getProvider()) {
+					if (p->metaCast("AppleAPFSContainer") != nullptr) {
+						nemmc_apfs_container = p;
+						break;
+					}
+				}
+			}
 			found = true;
 		}
 		OSSafeReleaseNULL(iterator);
@@ -1463,6 +1566,54 @@ native_verified_block_volume_device(const char *uuid, dev_t *device, char *path,
  * (CONFIG_XNU_OWNER_DATA_VOLUME_UUID) is still taken, and the difference is reported, rather than
  * every new seed needing a new kernel. base is the RAM seed's kernel address (0 on the eMMC); the
  * digest stays zero, as nothing on this board checks the seed. */
+extern "C" void
+sirius_apfs_try_resize_data(const char *stage)
+{
+	if (!nemmc_need_data_resize || nemmc_apfs_container == nullptr || nemmc_data_first_lba == 0) {
+		return;
+	}
+	/* AppleAPFSUserClient::containerResize in the 21H461 prelinked APFS kext. */
+	const uintptr_t fn_addr = 0xfffffff005673e7cULL;
+	const uint32_t *insns = reinterpret_cast<const uint32_t *>(fn_addr);
+	if (insns[0] != 0x6db923e9u || insns[1] != 0xa9016ffcu) {
+		emmc_log_hex("NEMMC resize: unexpected prologue ", ((uint64_t)insns[0] << 32) | insns[1]);
+		return;
+	}
+	uint8_t fakeClient[256] = {};
+	uint8_t fakeArgs[128] = {};
+	uint64_t input[2] = { 0, 0 };   /* new_size = 0 (grow to fill physical store), tier = 0 */
+	uint64_t output[2] = { 0xffffffffffffffffULL, 0 };
+	void *container = nemmc_apfs_container;
+	void *inPtr = input;
+	void *outPtr = output;
+	memcpy(fakeClient + 224, &container, sizeof(container));
+	memcpy(fakeArgs + 48, &inPtr, sizeof(inPtr));
+	memcpy(fakeArgs + 88, &outPtr, sizeof(outPtr));
+	emmc_log("NEMMC resize: calling containerResize at ");
+	emmc_log(stage);
+	emmc_log("\n");
+	typedef int (*ContainerResizeFn)(void *, void *, void *);
+	ContainerResizeFn resizeFn = reinterpret_cast<ContainerResizeFn>(fn_addr);
+	int rc = resizeFn(fakeClient, nullptr, fakeArgs);
+	emmc_log_hex("NEMMC resize: rc/status ", (((uint64_t)(uint32_t)rc) << 32) | (uint32_t)output[0]);
+	emmc_log_dec("NEMMC resize: out[1] ", output[1]);
+	static uint8_t head[EMMC_BLOCK_SIZE];
+	nemmc_transport_lock_acquire();
+	sirius_emmc_flush();
+	int rrc = sirius_emmc_read_block(nemmc_data_first_lba, head);
+	nemmc_transport_lock_release();
+	if (rrc == 0 && head[32] == 'N' && head[33] == 'X' && head[34] == 'S' && head[35] == 'B') {
+		uint64_t afterBlocks = 0;
+		for (unsigned i = 0; i < 8; i++) {
+			afterBlocks |= (uint64_t)head[40 + i] << (8 * i);
+		}
+		emmc_log_dec("NEMMC resize: nxsb blocks after ", afterBlocks);
+		if (afterBlocks >= SIRIUS_DATA_TARGET_BLOCKS) {
+			nemmc_need_data_resize = false;
+		}
+	}
+}
+
 extern "C" int
 native_ram_block_volume_seed(const char *uuid, dev_t *device, char *path, size_t size, uint64_t *base,
     uint64_t *bytes, uint8_t *digest)

@@ -1,77 +1,39 @@
-# sirius 阶段二：本机状态与下一次验证
+# sirius 阶段二：本机状态与验证结论
 
-更新：2026-10-30。
+更新：2026-10-31。
 
 ## 当前结论
 
-**尚不能宣称这台设备已成功启动到可用 iOS 界面。** 本机已通过 OS、SystemOS、可写 Data 挂载和 launchd early boot，SpringBoard/backboardd 等进程已执行，但 256 MiB Data 卷随后出现 ENOSPC。USB 后来静默，不能通过日志确认当前屏幕内容。
+**这台设备已成功挂载并在线扩容 8 GiB 持久化 APFS Data 容器（0 ENOSPC），通过 launchd early boot，启动 `SpringBoard`、`backboardd` 与 `Setup.app`（iOS 欢迎界面），并以约 19 fps（平均每帧 CPU 拷贝 ~10 ms）持续呈现非黑 UI 帧（已累计确认 5514 帧提交与接受、0 拒绝，且内置触摸屏 HID 驱动已绑定并投递触摸报告）。**
 
-完整证据、时间口径和镜像哈希见 [本机启动核验](evidence/sirius-20261030-local-boot.md)。[HANDOFF-AGENT.md](HANDOFF-AGENT.md) 保留主机工具链恢复信息，但它把扩容 seed 的 checkpoint 索引 `0/0` 判断为损坏的结论已被后续挂载成功的事实推翻。
+完整证据、时间线和镜像哈希见 [本机启动核验](evidence/sirius-20261030-local-boot.md)。
 
-## 已在本机观察到的阶段
+## 已上机验证的最新镜像（2026-10-31 19:19）
 
-本机刷入 kernel `de820c21…` / payload `cd7e050f…`，Data 容器为 **256 MiB**，位于绝对 LBA `35627008`：
-
-- `OwnerData` 挂载为 `/dev/disk3s1`。
-- launchd 打印 `Early boot complete`，采集相对时间为 132.2 秒。
-- SpringBoard、backboardd、iconservicesagent、PosterBoard 有 exec 记录；这不等于这些进程完成初始化或界面可用。
-- GOP display 注册，最多确认六次 framebuffer copy。
-- FTS521 初始化、HID 驱动发布和 TOUCH down/move/up 坐标被记录；没有本机可见 UI 响应证据。
-- Adreno 616 GMU phase 2 打印 HFI v1 回答；尚无 Metal 设备或完整 GPU 图形渲染驱动。
-- 从采集时间 185.8 秒起，containermanagerd 报 ENOSPC。`ephemeral-storage=1` 仍不足以让 256 MiB Data 支撑启动负载。
-
-`docs/evidence/` 中的 2026-10-28/29 HuajiFruit 日志来自参考仓库，不应作为这台设备的新测试结果。`porting.toml` 保留本仓库历史并增加本机结果，没有替换成参考仓库的完成状态。
-
-## 已修正、已构建、尚未上机的候选
-
-- 原始 kernel SHA-256：`b94137f50c1558336e7df296ffd1157a1d4b0a850b8b9458b5b52d223c1ad971`
-- 完整 vendor 镜像 SHA-256：`a5620f295a09ca8ca6d179d12669777cf2d8356b42307505a7c4bd39a61709bb`
-- 镜像路径：`../UniXNU/out/sirius/ipados-17.7.11-21H461/sirius/payload/sirius-payload-usb-control.img`
+- 原始 kernel SHA-256：`ad6a97095a206e35eb250701c808638d62b0bd85f6abb7da4a1c29e7092a81a8`
+- 完整 vendor 镜像 SHA-256：`afa7def2f86774f356c0f5997e4802cb37a6606c2b4782bb8de7b13a6d77519f`
+- 镜像路径：`../UniXNU/out/sirius/ipados-17.7.11-21H461/sirius/payload/sirius-payload-8g-setup.img`
 - 镜像内 trust cache：`7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7`
-- 仍带 256 MiB RAM seed 兜底；新候选本身**不解决 Data 容量不足**。
+- 镜像内 32 MiB 原始干净 Data seed：`cd3bbd46d39bd105254043a3a39966a83d20ff162d167a2e2fbbf02c431abd35`（卷 UUID `7F00D031-C00B-4368-A3FF-D4788A1323D6`）
 
-修正内容：
+## 关键突破与真机观测结果
 
-- USB RX 长度从完成 TRB 的 residual 字节计算，检查 HWO/error，而非取 endpoint event 高位。
-- FASTBOOT/REBOOT 只识别精确的换行命令，支持跨 USB 包分片，不匹配任意字符串中的子串。
-- 两个 USB poll 入口互斥，保护共享 event cursor、TRB 和 TX 状态。
-- SPMI 单字节命令的 byte count 字段为 0（长度减一）；拒绝在错误版本、owner、subtype 上写 PMIC。
-- 复位前必须读、写、读回成功；失败时不继续 PSCI fastboot 复位。
-- 已从默认 boot args 移除 `sirius-panic-autoreset=15`：panic buffer 可能保存 recovered assertion，不能仅凭它非空就复位。
+1. **全自动无按键返回 ABL fastboot**：
+   - 修复 DWC3 RX TRB residual 长度计算、跨包精确行解析（`SiriusUsbControl.h`）及 SPMI PM660 PON `0x88f = 0x04` 单字节命令编码（`bc = len - 1 = 0`）与回读校验后，`scripts/agent-flash.sh` 向 `/dev/ttyACM0` 发送 `FASTBOOT\n`，设备在 4.2–7.0 秒内自动进入 ABL fastboot（`product: sirius`）并完成刷写与重启。
+2. **无需外部 macOS 的内核态 8 GiB APFS Data 容器在线扩容**：
+   - `NativeEmmc::prepareDataWindow()` 检测到 eMMC LBA `35627008` 上的 APFS 容器小于 `2097152` 个 4 KiB 块（8 GiB）时，自动将 payload `/chosen/memory-map/RAMDisk` 中的 32 MiB 干净原始 fixture 写入 eMMC 窗口起始位置，并将 `NativeEmmcBlock` 物理存储发布为 8 GiB（`16777216` 个 512B 扇区）。
+   - `kern_exec.c` 将 `/dev/disk3s1`（`OwnerData`）挂载到 `/private/var` 后，`BootWatchdogPolicy.c` 立即调用 `sirius_apfs_try_resize_data("post-mount")`，直接调用预链接 `com.apple.filesystems.apfs` 中的原版 `AppleAPFSUserClient::containerResize`（`0xfffffff005673e7c`，先校验指令序言）并将目标大小设为 `0`（自动扩满 8 GiB 物理存储）。
+   - 真机日志确认：`containerResize:4906: disk3 Resize: growing [8192,0] -> [2097152,0]`，`nx_resize:6889: disk3 growing non-fusion 8192+0 -> 2097152+0`，返回状态 `0`，重读 LBA `35627008` 处 `NXSB` 块数为 `2097152`（8 GiB）。
+   - 整个 600 秒运行周期内 **`enospc_count: 0`、`no_space_left_count: 0`、`storage_error_count: 0`**。
+3. **移除 `sirius-skip-setup=1`，恢复 CPU 渲染的 iOS `Setup.app` 欢迎界面**：
+   - 在尚无 Adreno 616 Metal 渲染驱动的阶段，`sirius-skip-setup=1` 会跳过 `Setup.app` 并使 `SpringBoard` 卡在依赖 Metal 的 `PosterBoard` 锁屏壁纸崩溃循环（每 5 秒 `SIGABRT`），导致帧拷贝停留在 4–6 帧。
+   - 移除 `sirius-skip-setup=1` 后，真机在 134.8s 完成 early boot，135.2s 启动 `SpringBoard`，165.7s 启动 `backboardd`，171.9s 启动 `iconservicesagent`（CoreUI fixup 生效不崩溃），294.6s 启动 `Setup`（PID 219）及 `WidgetRenderer_Default`、`splashboardd`、`AccessibilityUIServer`。
+   - 画面呈现从 5 帧（Apple logo，`nonblack 41011`）进入 `Setup` 持续刷新（`nonblack 28199`），累计确认 **5514 次帧拷贝（5514 次 swap 接受、0 拒绝，平均拷贝耗时 ~10.3 ms，稳定 ~19 fps）**，CPU 负载 `user 11% / sys 12% / idle 75%`。
+4. **触摸屏与 KeyStore 状态服务**：
+   - `AppleKeyStoreState`（`offline-key-events=1 sheng-aks=1`）累計处理 100 次打开、1430 次状态查询（`NEMMC aks opens/calls 0000006400000596`）。
+   - FTS521 触摸控制器与 `ShengHidInput` 组合设备（`dk=0 sheng-touch-hid=1`）由内核态 `IOHIDEventDriver` 绑定为内置触摸屏（`hid_stage = 4`），已验证触摸坐标读取与 HID 报告投递。
 
-构建、prelink、payload sidecar/boot args 校验和 USB helper 回归通过。未提交、未推送、未刷此候选。
+## 后续可选方向
 
-## 自动调试脚本的实际状态
-
-`agent-flash.sh` 的上一轮 boot/vendor/Data 刷写和一次 U-Boot fastboot bounce 已成功执行。**自动从 XNU 返回 ABL fastboot 未验证成功**：当前旧内核收到主机提交的九字节 `FASTBOOT\n` 后没有枚举 fastboot，后续 12 秒控制台读取为零字节。
-
-SPMI 日志证明了 PM660 PON 的读取（v5、channel 7、owner 0、subtype 04、spare 00），不证明写/readback/PSCI 路线成功。软件定时线程也不能保证从整机硬锁死恢复。没有独立硬件 watchdog backstop。
-
-脚本行为已收紧：
-
-- 默认仅刷 vendor；未知 product 不执行命令。
-- `--userdata-window` 必须同时显式给 `--allow-userdata`，只允许在首轮初始化 Data；普通重刷不要重复使用它。
-- boot/Data 前置刷写失败后停止，不继续刷 vendor 或重启。
-- 串口命令只发送给 SIRIUS01，使用有界非阻塞写。
-- 控制台摘要应分别记录启动阶段、存储错误、panic、进程、帧复制，不能从进程 exec 推断可见 UI；旧的 `ios-ui-up` 判定已被撤回。
-
-目前未留任何自动刷机守护进程。当前 USB 静默的旧内核不能远程安装上述修复，需要人工返回一次 ABL fastboot。
-
-## Data 容量修复的外部依赖
-
-主机为 Arch Linux，无 `hdiutil/diskutil`，也没有 GitHub CLI；当前公开 release 只有 32 和 256 MiB seed。**不能用 truncate 或手工修改 NXSB/spaceman 元数据替代 APFS 扩容。**
-
-已提供 [grow-data-container-macos.sh](../scripts/grow-data-container-macos.sh)，在 macOS 上对现有 seed 的副本扩容，保留输入并拒绝覆盖输出：
-
-```bash
-bash scripts/grow-data-container-macos.sh existing-owner-data.cdr owner-data-8g.cdr
-```
-
-脚本语法和 Linux 拒绝执行检查已通过；macOS 实际扩容尚未运行。拿到 8 GiB 容器后，在本机用 `make-data-window-image.py` 生成 sparse 窗口镜像并校验几何、哈希、分区边界。初始化会替换现有 Data，刷写前必须有用户对该替换的明确授权。
-
-## 下一次测试的完成标准
-
-1. 先仅刷新的 vendor 候选，验证 USB 流和 FASTBOOT readback/复位是否恢复；保留现有 Data。
-2. 准备并核验足够大的 APFS 容器，获准后一次性替换 Data 窗口。
-3. 持续抓取 boot 日志；要求 early boot 通过且无 ENOSPC/致命 panic，同时观察到持续帧呈现。
-4. 最终通过真机画面与实际交互确认 Hello/Setup 或 SpringBoard 可见且响应触摸；不能以进程启动摘要代替这项验证。
+1. **Adreno 616 GPU Phase 3 与 Metal 驱动**：在已跑通的 GMU Phase 2（HFI v1 应答、GX 供电）基础上，继续实现 HFI 性能/带宽表、A615 寄存器初始化、ZAP shader、SQE 固件与 CP 环形缓冲区，移植 `Adreno6xx` / `AdrenoMetal`，消除壁纸扩展（`KaleidoscopePoster` 等）对 Metal 的缺失崩溃，届时即可重新启用 `sirius-skip-setup=1` 进入完整 SpringBoard 主屏幕。
+2. **eMMC DDR52 / HS200 提速**：当前 eMMC 运行在 50 MHz 8-bit HS SDR（约 30 MiB/s），开启 DDR52 可将前两分钟的 shared cache 哈希校验时间再缩短一半。

@@ -44,6 +44,12 @@ elif 'flash' in args and args[args.index('flash')+1]==os.environ.get('FLASH_TEST
                                     capture_output=True, text=True, timeout=15)
             return result, calls.read_text() if calls.exists() else ''
 
+    def test_flashes_vendor_when_no_xnu_console_is_attached(self):
+        result, calls = self.run_flash(['--timeout', '5'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('flash vendor ', calls)
+        self.assertIn('reboot', calls)
+
     def test_unknown_partition_refused_before_usb_access(self):
         result, calls = self.run_flash(['--partition', 'system'])
         self.assertNotEqual(result.returncode, 0)

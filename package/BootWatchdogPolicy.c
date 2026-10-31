@@ -116,9 +116,12 @@ static int append_job(const char **cursor) {
  *cursor=*e?e+1:e;return 0;
 }
 
+extern void sirius_apfs_try_resize_data(const char *stage);
+
 int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  proc_t p=process;
  int enabled=0,error=0,fd=-1;int32_t result=0;
+ sirius_apfs_try_resize_data("post-mount");
  PE_parse_boot_argn("sheng-disable-watchdogd",&enabled,sizeof(enabled));
  if(!PE_parse_boot_argn("sheng-disable-jobs",jobs,sizeof(jobs)))jobs[0]=0;jobs[sizeof(jobs)-1]=0;
  int lite=0;PE_parse_boot_argn("sheng-lite",&lite,sizeof(lite));if(lite!=1)lite=0;

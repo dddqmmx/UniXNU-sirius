@@ -98,9 +98,10 @@ PY
 }
 
 # Only the SIRIUS01 console is a control target.
+shopt -s nullglob
 for link in /dev/serial/by-id/*SIRIUS01*; do
-    tty_dev=$(readlink -f "$link")
-    if [ -c "$tty_dev" ] && [ -w "$tty_dev" ]; then
+    tty_dev=$(readlink -f "$link" || true)
+    if [ -n "$tty_dev" ] && [ -c "$tty_dev" ] && [ -w "$tty_dev" ]; then
         note "XNU console detected; sending FASTBOOT command"
         send_fastboot "$tty_dev" >> "$LOG_FILE" 2>&1 || true
     fi
