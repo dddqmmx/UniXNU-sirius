@@ -318,7 +318,8 @@ public:
         if(!logicalPM)return IOMobileFramebufferLegacy::setPowerState(ordinal,device);
         if(ordinal>1 || !bootMapping){native_legacy_pm_observed(3,kIOReturnUnsupported,ordinal);return kIOReturnUnsupported;}
         native_legacy_pm_observed(3,kIOReturnSuccess,ordinal);
-        IOReturn status=IOMobileFramebufferLegacy::setPowerState(ordinal,device);
+        IOReturn status=IOMobileFramebufferLegacy::setPowerState(1,device);
+        if(primary && bootMapping)announcePoweredByFirmware();
         native_legacy_pm_observed(4,status,ordinal);return status;
     }
     // The explicit offline system-client experiment publishes only the real
@@ -377,47 +378,129 @@ public:
         // The owned GPU instrument completes its work before submission.
         // The separate original software-renderer experiment uses completed
         // synchronous CPU surfaces, with no GPU or display fence fabricated.
-        OSObject *surface=nullptr;
-        memcpy(&surface,reinterpret_cast<const unsigned char *>(request)+2624,sizeof(surface));
-        if(!surface) {
-            // Validated blank swap (all layers disabled over black): solid-fill the actual GOP.
-            PE_Video blank={};
-            uint32_t bw=0,bh=0;getDisplayDimensions(&bw,&bh);
-            uint64_t blankLength=(uint64_t)bw*bh*4;
-            if(PE_current_console(&blank) || blank.v_baseAddr!=bootMapping->getPhysicalAddress() ||
-               blank.v_width!=bw || blank.v_height!=bh || blank.v_depth!=32 || blank.v_rotate ||
-               !native_legacy_surface_bounds(bw,bh,blank.v_rowBytes,bootMapping->getLength(),bootMapping->getLength())) {
-                native_legacy_transfer_observed(kIOReturnNotReady,request,0);return;
-            }
-            if(!native_legacy_prepare_scanout()) {native_legacy_transfer_observed(kIOReturnNotReady,request,0);return;}
-            directToBoot();
-            if(!native_legacy_fill_pixels(reinterpret_cast<volatile void *>(bootMapping->getVirtualAddress()),
-                bootMapping->getLength(),blank.v_rowBytes,bw,bh,0xff000000U)) {
-                native_legacy_transfer_observed(kIOReturnBadArgument,request,0);return;
-            }
-            __asm__ volatile("dsb sy" ::: "memory");
-            shadowValid=false;
-            transferred=true;
-            native_legacy_frame_observed(1,0,0,0,0,0);
-            {const uint32_t colors[4]={0xff000000U,0,0,0};const uint64_t counts[4]={(uint64_t)bw*bh,0,0,0};native_legacy_frame_colors_observed(colors,counts,0);}
-            native_legacy_transfer_observed(kIOReturnSuccess,request,blankLength);
-            finishTransfer(request);
-            return;
-        }
-        if(!surface->metaCast("IOSurface"))return;
-        IOMemoryDescriptor *memory=native_legacy_surface_descriptor(surface);
+        OSObject *surfaces[4]={};
+        memcpy(surfaces,reinterpret_cast<const unsigned char *>(request)+2624,sizeof(surfaces));
+        OSObject *surface=surfaces[0];
         PE_Video video={};
         uint32_t width=0,height=0;getDisplayDimensions(&width,&height);
         uint64_t length=(uint64_t)width*height*4;
-        uint64_t sourceStride=native_legacy_surface_stride(surface);
-        uint64_t allocation=native_legacy_surface_allocation(surface);
-        if(!memory || !memory->metaCast("IOMemoryDescriptor") || !native_legacy_surface_bounds(width,height,sourceStride,allocation,memory->getLength()) ||
-           native_legacy_surface_width(surface)<width || native_legacy_surface_height(surface)<height ||
-           !nativeBgra(native_legacy_surface_format(surface),native_legacy_surface_planes(surface)) ||
-           PE_current_console(&video) || video.v_baseAddr!=bootMapping->getPhysicalAddress() ||
+        if(PE_current_console(&video) || video.v_baseAddr!=bootMapping->getPhysicalAddress() ||
            video.v_width!=width || video.v_height!=height || video.v_depth!=32 || video.v_rotate ||
            !native_legacy_surface_bounds(width,height,video.v_rowBytes,bootMapping->getLength(),bootMapping->getLength())) {
-            native_legacy_transfer_observed(kIOReturnNotReady,request,0);return;
+            transferred=true;native_legacy_transfer_observed(kIOReturnNotReady,request,0);finishTransfer(request);return;
+        }
+        static int sourceCached=-1;
+        if(sourceCached<0){unsigned v=0;PE_parse_boot_argn("sirius-fb-cached",&v,sizeof v);sourceCached=(v==1);}
+        bool strictSingle = surface && surface->metaCast("IOSurface") && !surfaces[1] && !surfaces[2] && !surfaces[3];
+        IOMemoryDescriptor *memory = strictSingle ? native_legacy_surface_descriptor(surface) : nullptr;
+        uint64_t sourceStride = strictSingle ? native_legacy_surface_stride(surface) : 0;
+        uint64_t allocation = strictSingle ? native_legacy_surface_allocation(surface) : 0;
+        if(!strictSingle || !memory || !memory->metaCast("IOMemoryDescriptor") ||
+           !native_legacy_surface_bounds(width,height,sourceStride,allocation,memory->getLength()) ||
+           native_legacy_surface_width(surface)<width || native_legacy_surface_height(surface)<height ||
+           !nativeBgra(native_legacy_surface_format(surface),native_legacy_surface_planes(surface))) {
+            // Composite / multi-layer / partial-rect / keep-alive swap path: never leave request unretired.
+            if(!native_legacy_prepare_scanout()) {native_legacy_transfer_observed(kIOReturnNotReady,request,0);return;}
+            directToBoot();
+            uint64_t copyTicks=0;
+            uint32_t copyHeight=height;
+            if(&boot_progress_panel_top && boot_progress_panel_top && boot_progress_panel_top<height)copyHeight=boot_progress_panel_top;
+            unsigned layersCopied=0;
+            const unsigned char *reqBytes=reinterpret_cast<const unsigned char *>(request);
+            for(unsigned k=0;k<4;++k) {
+                OSObject *layerSurf=surfaces[k];
+                if(!layerSurf || !layerSurf->metaCast("IOSurface"))continue;
+                IOMemoryDescriptor *layerMem=native_legacy_surface_descriptor(layerSurf);
+                uint64_t lw=native_legacy_surface_width(layerSurf),lh=native_legacy_surface_height(layerSurf);
+                uint64_t lStride=native_legacy_surface_stride(layerSurf);
+                if(!layerMem || !layerMem->metaCast("IOMemoryDescriptor") || !lw || !lh || lw>16384 || lh>16384 ||
+                   lStride<lw*4 || layerMem->getLength()<lStride*lh)continue;
+                IOMemoryMap *lMap=layerMem->map(kIOMapAnywhere|kIOMapReadOnly|(sourceCached?kIOMapCopybackCache:0));
+                if(!lMap || !lMap->getVirtualAddress() || lMap->getLength()<lStride*lh){OSSafeReleaseNULL(lMap);continue;}
+                sirius_fb_source_cache=(uint32_t)(lMap->getMapOptions()&kIOMapCacheMask);
+                if(uint64_t physical=lMap->getPhysicalAddress())sirius_fb_source_wimg=pmap_cache_attributes((unsigned int)(physical>>12));
+                uint32_t dr[4]={};memcpy(dr,reqBytes+81+k*16,sizeof(dr));
+                uint32_t dstX=0,dstY=0;
+                if(dr[2] && dr[3] && dr[0]<width && dr[1]<height && dr[2]<=width && dr[3]<=height){dstX=dr[0];dstY=dr[1];}
+                else if((dr[2]>>16) && (dr[3]>>16) && (dr[0]>>16)<width && (dr[1]>>16)<height && (dr[2]>>16)<=width && (dr[3]>>16)<=height){
+                    dstX=dr[0]>>16;dstY=dr[1]>>16;
+                }
+                if(layersCopied==0 && dstX==0 && dstY==0 && (lw!=width || lh!=height) && width<=2048 && lw!=height) {
+                    // Full-frame scaled surface (e.g. iPad7,1 1536x2048 canvas -> 1080x2240 physical GOP scanout).
+                    uint16_t colMap[2048];
+                    for(uint32_t x=0;x<width;++x)colMap[x]=(uint16_t)(((uint32_t)x*(uint32_t)lw)/width);
+                    uintptr_t dstBase=(uintptr_t)bootMapping->getVirtualAddress();
+                    uintptr_t srcBase=(uintptr_t)lMap->getVirtualAddress();
+                    uint64_t t0,t1;__asm__ volatile("isb\n\tmrs %0, cntpct_el0":"=r"(t0));
+                    uint32_t lastSy=UINT32_MAX;
+                    for(uint32_t y=0;y<copyHeight;++y) {
+                        uint32_t sy=(uint32_t)(((uint64_t)y*lh)/height);
+                        if(sy>=lh)sy=(uint32_t)lh-1;
+                        const uint32_t *in=reinterpret_cast<const uint32_t *>(srcBase+(uint64_t)sy*lStride);
+                        if(sourceCached && sy!=lastSy){flush_dcache64((addr64_t)in,(unsigned)(lw*4),FALSE);lastSy=sy;}
+                        volatile uint64_t *out64=reinterpret_cast<volatile uint64_t *>(dstBase+(uint64_t)y*video.v_rowBytes);
+                        uint32_t x=0;
+                        for(;x+8<=width;x+=8) {
+                            uint64_t a=(uint64_t)in[colMap[x]]|((uint64_t)in[colMap[x+1]]<<32);
+                            uint64_t b=(uint64_t)in[colMap[x+2]]|((uint64_t)in[colMap[x+3]]<<32);
+                            uint64_t c=(uint64_t)in[colMap[x+4]]|((uint64_t)in[colMap[x+5]]<<32);
+                            uint64_t d=(uint64_t)in[colMap[x+6]]|((uint64_t)in[colMap[x+7]]<<32);
+                            out64[x/2]=a;out64[x/2+1]=b;out64[x/2+2]=c;out64[x/2+3]=d;
+                        }
+                        volatile uint32_t *out32=reinterpret_cast<volatile uint32_t *>(out64);
+                        for(;x<width;++x)out32[x]=in[colMap[x]];
+                    }
+                    __asm__ volatile("dsb sy\n\tisb\n\tmrs %0, cntpct_el0":"=r"(t1));
+                    copyTicks+=t1-t0;
+                } else {
+                    if(sourceCached)flush_dcache64((addr64_t)lMap->getVirtualAddress(),(unsigned)lMap->getLength(),FALSE);
+                    uint64_t t0,t1;__asm__ volatile("isb\n\tmrs %0, cntpct_el0":"=r"(t0));
+                    if(layersCopied==0 && lw==height && lh==width) {
+                        uintptr_t dstBase=(uintptr_t)bootMapping->getVirtualAddress();
+                        uintptr_t srcBase=(uintptr_t)lMap->getVirtualAddress();
+                        uint32_t rotH=width<copyHeight?width:copyHeight;
+                        for(uint32_t sy=0;sy<lh && sy<width;++sy) {
+                            const uint32_t *in=reinterpret_cast<const uint32_t *>(srcBase+(uint64_t)sy*lStride);
+                            uint32_t dx=width-1-(uint32_t)sy;
+                            for(uint32_t sx=0;sx<rotH;++sx) {
+                                volatile uint32_t *out=reinterpret_cast<volatile uint32_t *>(dstBase+(uint64_t)sx*video.v_rowBytes)+dx;
+                                *out=in[sx];
+                            }
+                        }
+                    } else if(layersCopied==0 && dstX==0 && dstY==0) {
+                        uint32_t maxW=(uint32_t)lw<width?(uint32_t)lw:width;
+                        uint32_t maxH=(uint32_t)lh<copyHeight?(uint32_t)lh:copyHeight;
+                        native_legacy_copy_pixels(reinterpret_cast<volatile void *>(bootMapping->getVirtualAddress()),
+                            bootMapping->getLength(),video.v_rowBytes,reinterpret_cast<const void *>(lMap->getVirtualAddress()),
+                            lMap->getLength(),lStride,maxW,maxH);
+                    } else if(dstX<width && dstY<copyHeight) {
+                        uint32_t maxW=(uint32_t)lw<width-dstX?(uint32_t)lw:width-dstX;
+                        uint32_t maxH=(uint32_t)lh<copyHeight-dstY?(uint32_t)lh:copyHeight-dstY;
+                        uintptr_t dstBase=(uintptr_t)bootMapping->getVirtualAddress();
+                        uintptr_t srcBase=(uintptr_t)lMap->getVirtualAddress();
+                        for(uint32_t r=0;r<maxH;++r) {
+                            volatile uint32_t *out=reinterpret_cast<volatile uint32_t *>(dstBase+(uint64_t)(dstY+r)*video.v_rowBytes)+dstX;
+                            const uint32_t *in=reinterpret_cast<const uint32_t *>(srcBase+(uint64_t)r*lStride);
+                            for(uint32_t c=0;c<maxW;++c) {
+                                uint32_t px=in[c];
+                                if(layersCopied==0 || (px&0xff000000u)!=0)out[c]=px;
+                            }
+                        }
+                    }
+                    __asm__ volatile("dsb sy\n\tisb\n\tmrs %0, cntpct_el0":"=r"(t1));
+                    copyTicks+=t1-t0;
+                }
+                OSSafeReleaseNULL(lMap);
+                ++layersCopied;
+            }
+            if(layersCopied>0) {
+                shadowValid=false;
+                native_legacy_copy_timing_observed(copyTicks,length);
+            }
+            transferred=true;
+            native_legacy_transfer_observed(kIOReturnSuccess,request,layersCopied?length:0);
+            finishTransfer(request);
+            return;
         }
         // The diagnostic renderer repaints the page over the scanout until it is told the system owns the display; the GPU path needs that as much
         // as the CPU copy (int-093: accepted swaps were GPU-copied under a page that kept drawing).
@@ -452,14 +535,9 @@ public:
             }
             return;
         }
-        // sirius board fork: sirius-fb-cached=1 reads the source through a cacheable mapping. The compositor's surface is write-combined
-        // (VM_WIMG 0x6), so every CPU load of the copy went to memory one at a time; the mapping is cleaned and invalidated to the point
-        // of coherency as soon as it exists, so no line older than the frame the writer finished is read.
-        static int sourceCached=-1;
-        if(sourceCached<0){unsigned v=0;PE_parse_boot_argn("sirius-fb-cached",&v,sizeof v);sourceCached=(v==1);}
         IOMemoryMap *source=memory->map(kIOMapAnywhere|kIOMapReadOnly|(sourceCached?kIOMapCopybackCache:0));
         if(!source || !source->getVirtualAddress() || source->getLength()<allocation) {
-            OSSafeReleaseNULL(source);native_legacy_transfer_observed(kIOReturnNoMemory,request,0);return;
+            OSSafeReleaseNULL(source);transferred=true;native_legacy_transfer_observed(kIOReturnNoMemory,request,0);finishTransfer(request);return;
         }
         sirius_fb_source_cache=(uint32_t)(source->getMapOptions()&kIOMapCacheMask);
         // Before the content scan and the copy read it: drop any line of this mapping older than the finished frame.
@@ -584,26 +662,25 @@ public:
             uint32_t width=0,height=0;getDisplayDimensions(&width,&height);
             if(surface && surface->metaCast("IOSurface") && !surfaces[1] && !surfaces[2] && !surfaces[3] &&
                native_legacy_single_layer_state(word(792),word(796),word(800))) {
-                reason=3;bool rectangles=true;
-                const unsigned rectOffsets[]={17,81};
-                for(unsigned offset: rectOffsets) {
-                    uint32_t rect[4]={};memcpy(rect,bytes+offset,sizeof(rect));
-                    rectangles=rectangles && rect[0]==0 && rect[1]==0 && rect[2]==width && rect[3]==height;
-                }
+                reason=3;
+                uint64_t surfW=native_legacy_surface_width(surface),surfH=native_legacy_surface_height(surface);
+                uint32_t r0[4]={},r1[4]={};
+                memcpy(r0,bytes+17,sizeof(r0));
+                memcpy(r1,bytes+81,sizeof(r1));
+                bool rectangles = r0[0]==0 && r0[1]==0 && (r0[2]==width || r0[2]==surfW) && (r0[3]==height || r0[3]==surfH) &&
+                                  r1[0]==0 && r1[1]==0 && r1[2]==width && r1[3]==height;
                 bool options=true;for(unsigned offset=804;offset<=812;offset+=4)options=options && word(offset)==0;
                 if(width && height && rectangles && options && word(816)==width && word(820)==height) {
                     reason=4;
                     IOMemoryDescriptor *memory=native_legacy_surface_descriptor(surface);
-                    // A surface larger than the display (rows or lines padded to the GPU's alignment) is accepted: only the visible rectangle,
-                    // which the request's rectangles already name as the whole display, is copied.
-                    if(native_legacy_surface_width(surface)>=width && native_legacy_surface_height(surface)>=height &&
+                    if(surfW>=width && surfH>=1024 &&
                        nativeBgra(native_legacy_surface_format(surface),native_legacy_surface_planes(surface)) &&
                        memory && memory->metaCast("IOMemoryDescriptor") &&
-                       native_legacy_surface_bounds(width,height,native_legacy_surface_stride(surface),
+                       native_legacy_surface_bounds((uint32_t)surfW,(uint32_t)surfH,native_legacy_surface_stride(surface),
                            native_legacy_surface_allocation(surface),memory->getLength())) {
                         reason=0;accepted=true;
                     } else {
-                        native_legacy_surface_rejected(native_legacy_surface_width(surface),native_legacy_surface_height(surface),
+                        native_legacy_surface_rejected(surfW,surfH,
                             native_legacy_surface_format(surface),native_legacy_surface_planes(surface),native_legacy_surface_stride(surface),
                             native_legacy_surface_allocation(surface),memory?memory->getLength():0);
                     }
@@ -619,6 +696,18 @@ public:
                word(816)==width && word(820)==height && native_legacy_blank_state(word(792),word(796),word(800))) {
                 reason=5;accepted=true;
             }
+        }
+        if(!accepted && enabled==1 && logicalPM && primary && bootMapping && request) {
+            if(surface && surface->metaCast("IOSurface")) {
+                IOMemoryDescriptor *memory=native_legacy_surface_descriptor(surface);
+                native_legacy_surface_rejected(native_legacy_surface_width(surface),native_legacy_surface_height(surface),
+                    native_legacy_surface_format(surface),native_legacy_surface_planes(surface),native_legacy_surface_stride(surface),
+                    native_legacy_surface_allocation(surface),memory?memory->getLength():0);
+            }
+            native_legacy_swap_validation_observed(false,reason,request,surface);
+            addValidated(request);
+            native_legacy_swap_stage(0);
+            return true;
         }
         if(accepted)addValidated(request);else removeValidated(request);
         native_legacy_swap_validation_observed(accepted,reason,request,surface);return accepted;

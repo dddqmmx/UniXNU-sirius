@@ -144,7 +144,11 @@ extern "C" volatile uint64_t native_legacy_copy_n, native_legacy_copy_last, nati
 extern "C" volatile uint64_t sirius_fb_read[2] __attribute__((weak_import));
 extern "C" volatile uint32_t sirius_fb_source_cache, sirius_fb_scanout_cache, sirius_fb_source_wimg __attribute__((weak_import));
 extern "C" volatile uint32_t native_legacy_swap_validation_calls, native_legacy_swap_accepted_count,
-    native_legacy_swap_rejected_count, native_legacy_frame_count __attribute__((weak_import));
+    native_legacy_swap_rejected_count, native_legacy_frame_count, native_legacy_rej_reason __attribute__((weak_import));
+extern "C" volatile uint32_t native_legacy_rej_state[3], native_legacy_rej_options[3], native_legacy_rej_size[2]
+    __attribute__((weak_import));
+extern "C" volatile uint32_t native_legacy_rej_rects[2][4] __attribute__((weak_import));
+extern "C" volatile uint64_t native_legacy_rej_surface[7] __attribute__((weak_import));
 extern "C" volatile uint64_t native_legacy_frame_stats[32][5] __attribute__((weak_import));
 extern "C" volatile uint32_t native_aks_opens, native_aks_calls __attribute__((weak_import));
 extern "C" volatile uint32_t sirius_touch_state[8], sirius_hid_stage, native_hid_input_events[8] __attribute__((weak_import));
@@ -424,6 +428,37 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 				    ((uint64_t)native_legacy_swap_validation_calls << 40) |
 				    ((uint64_t)native_legacy_swap_accepted_count << 20) |
 				    native_legacy_swap_rejected_count);
+				if (native_legacy_swap_rejected_count > 0 && &native_legacy_rej_reason && &native_legacy_rej_state &&
+				    &native_legacy_rej_options && &native_legacy_rej_size) {
+					emmc_log_hex("NEMMC fb nonstrict reason/w/h ",
+					    ((uint64_t)native_legacy_rej_reason << 32) |
+					    ((uint64_t)(native_legacy_rej_size[0] & 0xffffu) << 16) |
+					    (native_legacy_rej_size[1] & 0xffffu));
+					emmc_log_hex("NEMMC fb nonstrict state0/1 ",
+					    ((uint64_t)native_legacy_rej_state[0] << 32) | native_legacy_rej_state[1]);
+					emmc_log_hex("NEMMC fb nonstrict bg/opt0 ",
+					    ((uint64_t)native_legacy_rej_state[2] << 32) | native_legacy_rej_options[0]);
+					emmc_log_hex("NEMMC fb nonstrict opt1/2 ",
+					    ((uint64_t)native_legacy_rej_options[1] << 32) | native_legacy_rej_options[2]);
+					if (&native_legacy_rej_surface) {
+						emmc_log_hex("NEMMC fb nonstrict surf w/h/fmt ",
+						    ((native_legacy_rej_surface[0] & 0xffffull) << 48) |
+						    ((native_legacy_rej_surface[1] & 0xffffull) << 32) |
+						    (native_legacy_rej_surface[2] & 0xffffffffull));
+					}
+					if (&native_legacy_rej_rects) {
+						emmc_log_hex("NEMMC fb nonstrict r0 x/y/w/h ",
+						    ((uint64_t)(native_legacy_rej_rects[0][0] & 0xffffu) << 48) |
+						    ((uint64_t)(native_legacy_rej_rects[0][1] & 0xffffu) << 32) |
+						    ((uint64_t)(native_legacy_rej_rects[0][2] & 0xffffu) << 16) |
+						    (native_legacy_rej_rects[0][3] & 0xffffu));
+						emmc_log_hex("NEMMC fb nonstrict r1 x/y/w/h ",
+						    ((uint64_t)(native_legacy_rej_rects[1][0] & 0xffffu) << 48) |
+						    ((uint64_t)(native_legacy_rej_rects[1][1] & 0xffffu) << 32) |
+						    ((uint64_t)(native_legacy_rej_rects[1][2] & 0xffffu) << 16) |
+						    (native_legacy_rej_rects[1][3] & 0xffffu));
+					}
+				}
 			}
 			if (&native_legacy_frame_count && &native_legacy_frame_stats && native_legacy_frame_count > 0) {
 				unsigned idx = native_legacy_frame_count > 32 ? 31 : native_legacy_frame_count - 1;

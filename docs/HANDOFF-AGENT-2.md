@@ -8,11 +8,11 @@
 
 完整证据、时间线和镜像哈希见 [本机启动核验](evidence/sirius-20261030-local-boot.md)。
 
-## 已上机验证的最新镜像（2026-10-31 19:19）
+## 已上机验证的最新镜像（2026-10-31 23:08）
 
-- 原始 kernel SHA-256：`ad6a97095a206e35eb250701c808638d62b0bd85f6abb7da4a1c29e7092a81a8`
-- 完整 vendor 镜像 SHA-256：`afa7def2f86774f356c0f5997e4802cb37a6606c2b4782bb8de7b13a6d77519f`
-- 镜像路径：`../UniXNU/out/sirius/ipados-17.7.11-21H461/sirius/payload/sirius-payload-8g-setup.img`
+- 原始 kernel SHA-256：`ff57d694b4ba38fadd74f396e51e49669f941f180fb0e87e776850c770b96dc5`
+- 完整 vendor 镜像 SHA-256：`fad069ea153835c7244de7ea8dc782f34fec7a8dc0f76b393b439173346e0825`
+- 镜像路径：`../UniXNU/out/sirius/ipados-17.7.11-21H461/sirius/payload/sirius-payload-swapfix.img`
 - 镜像内 trust cache：`7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7`
 - 镜像内 32 MiB 原始干净 Data seed：`cd3bbd46d39bd105254043a3a39966a83d20ff162d167a2e2fbbf02c431abd35`（卷 UUID `7F00D031-C00B-4368-A3FF-D4788A1323D6`）
 

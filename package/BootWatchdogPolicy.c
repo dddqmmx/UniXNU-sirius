@@ -139,7 +139,13 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  if(setup==1)printf("sheng setup flags reset: Hello page on this boot\n");
  // Skipping Setup never overrides an explicit request for the Hello page.
  int skip=0;PE_parse_boot_argn("sirius-skip-setup",&skip,sizeof(skip));
- if(skip==1 && setup!=1)sheng_boot_skip_setup(p,scratch);
+ if(skip==1 && setup!=1) {
+  sheng_boot_skip_setup(p,scratch);
+ } else {
+  // Always apply SpringBoard's no-watchdog and no-auto-dim/no-idle-sleep prefs on this board (no power button to wake).
+  int sb_err=sheng_boot_write_file(p,scratch,skip_setup_files[3].path,skip_setup_files[3].text,501,501,0600);
+  printf("sirius springboard prefs: %s %d\n",skip_setup_files[3].path,sb_err);
+ }
  if(!enabled && !jobs[0] && !lite)return 0;
  policy[0]=0;strlcat(policy,policy_head,sizeof(policy));
  if(enabled)strlcat(policy,policy_watchdogd,sizeof(policy));

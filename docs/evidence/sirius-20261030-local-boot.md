@@ -108,3 +108,20 @@ Deployment also requires the currently unresponsive unit to return to ABL fastbo
   - `NEMMC fb copies 5514`, `NEMMC fb swaps calls/acc/rej 00158a0158a00000` (5514 swaps submitted, 5514 accepted, 0 rejected; sustained ~19 fps at ~10 ms mean CPU copy time).
   - `NEMMC load user % 11`, `sys % 12`, `idle % 75`.
   - `enospc_count: 0`, `no_space_left_count: 0`, `storage_error_count: 0`, `fatal_panics: []`.
+
+## Fix for post-interaction UI freeze (`verify_swap failed` on 1536x2048 canvas) and fast-tap coalescing (2026-10-31 23:08)
+
+- Diagnosis (`out/hang-check.timeline` and `out/boot-swapfix2.timeline`):
+  1. After 163,393 accepted frames (~2.5 hours uptime) and 46 touch contacts on `Setup.app`, `backboardd` switched its render canvas to the iPad7,1 native `1536x2048` (`0x0600x0x0800`) BGRA surface with source rectangle `r0 = (0, 0, 1536, 2048)` and destination rectangle `r1 = (0, 0, 1080, 2240)` (`NEMMC fb nonstrict surf w/h/fmt 0600080042475241`, `r0 0000000006000800`, `r1 00000000043808c0`).
+  2. `NativeLegacyDisplay::validateSwap` previously required both `r0` and `r1` to equal `(0, 0, 1080, 2240)` and `surfH >= 2240`, so it rejected every swap from `swap id 163394` onward with `NativeLegacyDisplay: verify_swap failed for swap id: ...` (`reason = 3`), freezing the screen while `RenderServer` retried at 60 Hz.
+  3. In `package/sirius_touch.c`, a fast tap whose `EVT_ENTER` (`0x13`) and `EVT_LEAVE` (`0x33`) both arrived within one 16 ms poll batch set and cleared `contact_down` before `publish_contacts()` ran, coalescing the tap away.
+  4. When `sirius-skip-setup=1` was removed, `/private/var/mobile/Library/Preferences/com.apple.springboard.plist` (`BKNoWatchdogs`, `FBLaunchWatchdogExceptions`, `SBDisableAutoDim`, `SBDontDimOrLockOnAC`, `SBDisableIdleSleep`) was also skipped.
+- Fixes:
+  - `drivers/GopFramebuffer/NativeLegacyDisplay.cpp`: accept scaled full-screen `IOSurface` swaps (`r0 = (0, 0, surfW, surfH)` -> `r1 = (0, 0, width, height)`), implement a 64-bit 8-pixel unrolled nearest-neighbor scaling blit (`1536x2048 -> 1080x2240`, matching the `[0..30480]x[0..20320]` normalized touch axes across the full panel), fallback-accept/retire multi-layer or blank swaps so `RenderServer` never stalls, and keep GOP `setPowerState` in state 1.
+  - `package/sirius_touch.c`: flush `publish_contacts()` with a 10 ms separation whenever `EVT_ENTER` and `EVT_LEAVE` for the same touch ID occur in the same FIFO drain batch.
+  - `package/BootWatchdogPolicy.c`: always write `com.apple.springboard.plist` (`BKNoWatchdogs`, `SBDisableAutoDim`, `SBDontDimOrLockOnAC`, `SBDisableIdleSleep`) even when `Setup.app` is not skipped.
+- Hardware verification (`out/boot-scale.timeline`, kernel `ff57d694b4ba38fadd74f396e51e49669f941f180fb0e87e776850c770b96dc5`, vendor payload `fad069ea153835c7244de7ea8dc782f34fec7a8dc0f76b393b439173346e0825`):
+  - Persistent 8 GiB eMMC Data volume mounted directly at `/dev/disk3s1` (`16777216` sectors, `enospc_count: 0`).
+  - `sirius springboard prefs: /private/var/mobile/Library/Preferences/com.apple.springboard.plist 0`.
+  - `Early boot complete` at 129.9 s, `SpringBoard` at 130.4 s, `backboardd` at 135.0 s, `Setup` at 194.6 s (`Setup` started 100 s earlier on the initialized persistent Data volume).
+  - `NEMMC fb copies 1331`, `NEMMC fb swaps calls/acc/rej 0005340053400000` (1332 swaps submitted, 1332 accepted, **0 rejected**, **0 `verify_swap failed`**, ~15–25 ms per scaled frame at ~19 fps).

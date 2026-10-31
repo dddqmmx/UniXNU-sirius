@@ -620,11 +620,36 @@ touch_thread(void *parameter, int wait_result)
 
 	for (;;) {
 		int changed = 0;
+		uint16_t batch_entered = 0, batch_left = 0;
 		for (unsigned n = 0; n < 32; ++n) {
 			if (fts_read_event(data) || data[0] == EVT_NOEVENT) {
 				break;
 			}
 			sirius_touch_state[3] = sirius_touch_state[3] + 1;
+			unsigned id = (data[1] >> 4) & 0xfu;
+			uint16_t bit = (uint16_t)(1u << id);
+			if (data[0] == EVT_LEAVE && (batch_entered & bit)) {
+				/* Flush the pending touch-down before clearing the contact so a fast tap is not coalesced away. */
+				publish_contacts();
+				IOSleep(10);
+				batch_entered = 0;
+				changed = 0;
+			} else if ((data[0] == EVT_ENTER || data[0] == EVT_MOTION) && (batch_left & bit)) {
+				publish_contacts();
+				IOSleep(10);
+				batch_left = 0;
+				changed = 0;
+			} else if ((data[0] == EVT_CONTROLLER_READY || data[0] == EVT_ERROR) && contact_down) {
+				contact_down = 0;
+				publish_contacts();
+				batch_entered = batch_left = 0;
+				changed = 0;
+			}
+			if (data[0] == EVT_ENTER || data[0] == EVT_MOTION) {
+				batch_entered |= bit;
+			} else if (data[0] == EVT_LEAVE) {
+				batch_left |= bit;
+			}
 			changed |= handle_event(data);
 		}
 		if (changed) {
