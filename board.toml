@@ -142,7 +142,7 @@ kernel_args = [
   "sheng-touch-hid=1",              # NativeHidInput: add the touch screen collection to that combined device
   "dk=0",                           # DriverKit off: the in-kernel IOHIDEventDriver matches instead
   "sheng-banner=0",                 # yield the full 1080x2240 scanout once iOS owns the display (diagnostics stay on USB console)
-  "sirius-gpu=2",                   # package/sirius_gpu.c: Adreno 616 phases 1-2 (CX power, GMU SMMU context, GMU boot, HFI)
+  "sirius-gpu=3",                   # package/sirius_gpu.c: Adreno 616 phases 1-3 (CX/GMU, HFI tables, GX, SMMU CB0, SQE, CP ring)
   "validation_disables=0x10",       # KF_STACKSHOT_OVRD: user stackshots return KERN_NOT_SUPPORTED
 ]
 

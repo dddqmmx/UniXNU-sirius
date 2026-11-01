@@ -46,6 +46,8 @@ extern void flush_dcache64(uint64_t addr, unsigned count, int phys);
 extern void *sirius_gpu_dma_alloc(uint32_t bytes, uint64_t *physical);   /* package/LegacyDisplayProbe.cpp */
 extern const uint32_t sirius_gmu_fw[];                                    /* a630_gmu.bin, scripts/build-sirius-gpu.py */
 extern const uint32_t sirius_gmu_fw_words;
+extern const uint32_t sirius_sqe_fw[];                                    /* a630_sqe.fw, scripts/build-sirius-gpu.py */
+extern const uint32_t sirius_sqe_fw_words;
 extern char boot_progress_ext_wide[2][112] __attribute__((weak_import));
 
 #define GCC_BASE                0x00100000u
@@ -600,6 +602,219 @@ gmu_report(const char *result)
 	printf("GPU phase 2: %s (phase=%u)\n", result, sirius_gpu_state[0]);
 }
 
+static uint32_t
+pm4_type7(uint32_t opcode, uint32_t count)
+{
+	uint32_t hdr = (7u << 28) | ((opcode & 0x7fu) << 16) | (count & 0x3fffu);
+	uint32_t p = hdr ^ (hdr >> 16);
+	p ^= p >> 8;
+	p ^= p >> 4;
+	p ^= p >> 2;
+	p ^= p >> 1;
+	return hdr | (((~p) & 1u) << 15);
+}
+
+#define GMU_OOB_GPU_SET (1u << 16)
+#define GMU_OOB_GPU_ACK (1u << 24)
+#define GPUCC_GX_GMU_CBCR 0x1064u
+#define SMMU_GPU_BANK 0u
+#define SMMU_GPU_GROUP 0u
+#define GPU_STREAM 0u
+#define GPU_IOVA 0x10000000u
+#define GPU_SQE_IOVA 0x10000000u
+#define GPU_RING_IOVA 0x10009000u
+#define GPU_MEMPTRS_IOVA 0x10011000u
+#define GPU_DMA_TABLES 0x3000u
+#define GPU_DMA_PAGES 18u
+#define GPU_DMA_BYTES (GPU_DMA_TABLES + GPU_DMA_PAGES * 0x1000u)
+
+static void
+gpu_phase3(uint32_t gx, uint32_t mx)
+{
+	/* 1. HFI v1 performance table (id 4, 59 words), bandwidth table (id 3, 160 words) and HFI test (id 5, 1 word). */
+	uint32_t perf[59] = { 0 };
+	perf[1] = 2;                                    /* 2 GPU OPP levels */
+	perf[2] = 2;                                    /* 2 GMU levels */
+	perf[3] = 0;
+	perf[4] = 0xffffffffu;
+	perf[5] = 0;
+	perf[6] = (mx << 16) | gx;
+	perf[7] = 0xffffffffu;
+	perf[8] = 430000u;                              /* 430 MHz in kHz */
+	perf[51] = 0;
+	perf[52] = 0;
+	perf[53] = 1;
+	perf[54] = 200000u;                             /* 200 MHz GMU in kHz */
+	int perf_rc = hfi_send(4, perf, 59, 0, 0);
+
+	uint32_t bw[160] = { 0 };
+	bw[1] = 1;                                      /* 1 bw level */
+	bw[2] = 2;                                      /* 2 cnoc cmds */
+	bw[3] = 3;                                      /* 3 ddr cmds */
+	bw[4] = 0x1;                                    /* cnoc wait bitmask */
+	bw[5] = 0x7;                                    /* ddr wait bitmask */
+	bw[6] = 0x50004u;
+	bw[7] = 0x500a0u;
+	bw[18] = 1;
+	bw[19] = 1;
+	bw[24] = 0x50000u;
+	bw[25] = 0x5005cu;
+	bw[26] = 0x5000cu;
+	int bw_rc = hfi_send(3, bw, 160, 0, 0);
+
+	uint32_t test_msg[1] = { 0 };
+	int test_rc = hfi_send(5, test_msg, 1, 0, 0);
+	printf("GPU phase 3 hfi tables: perf=%d bw=%d test=%d\n", perf_rc, bw_rc, test_rc);
+	sirius_gpu_state[0] = 11;
+
+	/* 2. Enable GX GMU branch clock, request OOB_GPU_SET and map the 3D GPU MMIO window (0x05000000). */
+	branch_on(&GPUCC(GPUCC_GX_GMU_CBCR), "gx_gmu");
+	GMU(GMU_HOST2GMU_INTR_SET) = GMU_OOB_GPU_SET;
+	int oob_gpu = poll32(&GMU(GMU_GMU2HOST_INTR_INFO), GMU_OOB_GPU_ACK, GMU_OOB_GPU_ACK, 20000);
+	GMU(GMU_GMU2HOST_INTR_CLR) = GMU_OOB_GPU_ACK;
+	uint32_t gx_gdscr = GPUCC(GPUCC_GX_GDSCR), sptp = GMU(GMU_SPTPRAC_PWR_CLK_STATUS);
+	printf("GPU phase 3 gx power: oob_gpu=%d gx_gdscr=%08x sptprac=%08x\n", oob_gpu, gx_gdscr, sptp);
+	if (!(gx_gdscr & GDSC_PWR_ON) && (sptp & 0x38) != 0x28) {
+		gmu_report("Phase 3: GX rail not powered");
+		return;
+	}
+	volatile uint32_t *gpu = (volatile uint32_t *)ml_io_map(GPU_BASE, 0x40000);
+	if (!gpu) {
+		gmu_report("Phase 3: GPU MMIO map failed");
+		return;
+	}
+	sirius_gpu_state[0] = 12;
+	printf("GPU phase 3 mmio: rbbm_status=%08x cp_sqe_cntl=%08x hw_fault=%08x\n", gpu[0x0210], gpu[0x0808], gpu[0x0821]);
+
+	/* 3. Allocate 84 KiB DMA for GPU SMMU CB0 (stream 0), SQE firmware, ringbuffer and memptrs/fence page. */
+	uint64_t gpu_pa = 0;
+	volatile uint32_t *gpu_dma = (volatile uint32_t *)sirius_gpu_dma_alloc(GPU_DMA_BYTES, &gpu_pa);
+	if (!gpu_dma || !gpu_pa || (gpu_pa & 0xfff) || sirius_sqe_fw_words == 0 || sirius_sqe_fw_words > 9 * 1024) {
+		gmu_report("Phase 3: no GPU DMA memory");
+		return;
+	}
+	for (unsigned i = 0; i < GPU_DMA_BYTES / 4; ++i) {
+		gpu_dma[i] = 0;
+	}
+	volatile uint64_t *l1 = (volatile uint64_t *)gpu_dma, *l2 = l1 + 512, *l3 = l2 + 512;
+	l1[GPU_IOVA >> 30] = (gpu_pa + 0x1000) | PTE_TABLE;
+	l2[(GPU_IOVA >> 21) & 0x1ff] = (gpu_pa + 0x2000) | PTE_TABLE;
+	for (unsigned i = 0; i < GPU_DMA_PAGES; ++i) {
+		l3[((GPU_IOVA >> 12) & 0x1ff) + i] = (gpu_pa + GPU_DMA_TABLES + 0x1000ull * i) | PTE_PAGE;
+	}
+	volatile uint32_t *sqe_dst = gpu_dma + GPU_DMA_TABLES / 4;
+	for (unsigned i = 0; i < sirius_sqe_fw_words; ++i) {
+		sqe_dst[i] = sirius_sqe_fw[i];
+	}
+	flush_dcache64(gpu_pa, GPU_DMA_BYTES, 1);
+
+	/* Program GPU SMMU Context Bank 0 for Stream 0 (3D GPU core). */
+	volatile uint32_t *gr0 = smmu_whole, *gr1 = smmu_whole + smmu_page / 4;
+	volatile uint32_t *cb0 = smmu_whole + (smmu_global_pages + SMMU_GPU_BANK) * smmu_page / 4;
+	cb0[0x00 / 4] = 0;
+	gr1[(0x800 + 4 * SMMU_GPU_BANK) / 4] = 1;               /* CBA2R: VA64 */
+	gr1[(0x000 + 4 * SMMU_GPU_BANK) / 4] = 0x1f300;         /* CBAR: S1 translate */
+	cb0[0x10 / 4] = (7u << 15) | 1u;                        /* TCR2 */
+	cb0[0x30 / 4] = (1u << 23) | (2u << 12) | 32u;          /* TCR: 4 KiB, T0SZ 32 */
+	*(volatile uint64_t *)&cb0[0x20 / 4] = gpu_pa;          /* TTBR0: ASID 0 */
+	*(volatile uint64_t *)&cb0[0x28 / 4] = 0;
+	cb0[0x38 / 4] = 0xf404ff44u;
+	cb0[0x3c / 4] = 0;
+	cb0[0x58 / 4] = cb0[0x58 / 4];
+	__asm__ volatile ("dsb sy" ::: "memory");
+	cb0[0x618 / 4] = 0;
+	cb0[0x7f0 / 4] = 0;
+	poll32(&cb0[0x7f4 / 4], 1, 0, 10000);
+	cb0[0x00 / 4] = 0x1027;                                 /* SCTLR enable */
+	gr0[(0xc00 + 4 * SMMU_GPU_GROUP) / 4] = SMMU_GPU_BANK;  /* S2CR0 -> bank 0 */
+	gr0[(0x800 + 4 * SMMU_GPU_GROUP) / 4] = (1u << 31) | (0x400u << 16) | GPU_STREAM; /* SMR0: stream 0 / 0x400 */
+	gr0[0x68 / 4] = 0;
+	gr0[0x70 / 4] = 0;
+	poll32(&gr0[0x74 / 4], 1, 0, 10000);
+	__asm__ volatile ("dsb sy" ::: "memory");
+
+	*(volatile uint64_t *)&cb0[0x800 / 4] = GPU_SQE_IOVA;
+	int ats_done = poll32(&cb0[0x8f0 / 4], 1, 0, 10000);
+	uint64_t par = *(volatile uint64_t *)&cb0[0x50 / 4];
+	int ats_ok = ats_done && !(par & 1) && (par & 0x0000fffffffff000ull) == (gpu_pa + GPU_DMA_TABLES);
+	printf("GPU phase 3 smmu cb0 ats1pr %08x -> par=%08x%08x %s (fsr=%08x)\n", GPU_SQE_IOVA, (uint32_t)(par >> 32),
+	    (uint32_t)par, ats_ok ? "ok" : "FAIL", cb0[0x58 / 4]);
+	if (!ats_ok) {
+		gmu_report("Phase 3: GPU SMMU CB0 ATS1PR failed");
+		return;
+	}
+	sirius_gpu_state[0] = 13;
+
+	/* 4. Configure A615/A616 UCHE/CP registers, load SQE microcode, start CP ringbuffer and execute CP_MEM_WRITE. */
+	gpu[0x00ae] = 0x8aa8aa02u;                              /* RBBM_CLOCK_CNTL */
+	gpu[0x084f] = 0;                                        /* CP_PROTECT_CNTL off */
+	gpu[0x0844] = 0x6fu;                                    /* CP_APRIV_CNTL: privileged ring/rptr/icache reads */
+	gpu[0x0e07] = 0x00040000u;                              /* UCHE_WRITE_THRU_BASE_LO */
+	gpu[0x0e08] = 0x0000ffffu;                              /* UCHE_WRITE_THRU_BASE_HI */
+	gpu[0x0e09] = 0x00040000u;                              /* UCHE_TRAP_BASE_LO */
+	gpu[0x0e0a] = 0x0000ffffu;                              /* UCHE_TRAP_BASE_HI */
+	gpu[0x0e0b] = 0x00100000u;                              /* UCHE_GMEM_RANGE_MIN_LO */
+	gpu[0x0e0c] = 0;
+	gpu[0x0e0d] = 0x0017ffffu;                              /* UCHE_GMEM_RANGE_MAX_LO (512 KiB GMEM) */
+	gpu[0x0e0e] = 0;
+	gpu[0x0e17] = 0x00000002u;                              /* UCHE_CACHE_WAYS */
+	gpu[0x0e19] = 0x00000004u;                              /* UCHE_CLIENT_PF */
+
+	gpu[0x0830] = GPU_SQE_IOVA;                             /* CP_SQE_INSTR_BASE_LO */
+	gpu[0x0831] = 0;                                        /* CP_SQE_INSTR_BASE_HI */
+	gpu[0x0800] = GPU_RING_IOVA;                            /* CP_RB_BASE_LO */
+	gpu[0x0801] = 0;                                        /* CP_RB_BASE_HI */
+	gpu[0x0804] = GPU_MEMPTRS_IOVA;                         /* CP_RB_RPTR_ADDR_LO */
+	gpu[0x0805] = 0;                                        /* CP_RB_RPTR_ADDR_HI */
+	gpu[0x0802] = 0x00000b09u;                              /* CP_RB_CNTL: 32 KiB ring, RPTR shadow enabled */
+	gpu[0x0806] = 0;                                        /* CP_RB_RPTR */
+	gpu[0x0807] = 0;                                        /* CP_RB_WPTR */
+	__asm__ volatile ("dsb sy" ::: "memory");
+	printf("GPU phase 3 ready: sqe_base=%08x rb_base=%08x rptr_addr=%08x rbbm=%08x hw_fault=%08x cb0_fsr=%08x\n",
+	    gpu[0x0830], gpu[0x0800], gpu[0x0804], gpu[0x0210], gpu[0x0821], cb0[0x58 / 4]);
+	if (gpu_mode < 4) {
+		gmu_report("Phase 3: HFI tables, GX on, SMMU CB0 & SQE ready");
+		return;
+	}
+	gpu[0x0808] = 1;                                        /* CP_SQE_CNTL: start SQE (sirius-gpu=4, requires gfx3d_clk PLL) */
+	__asm__ volatile ("dsb sy" ::: "memory");
+	sirius_gpu_state[0] = 14;
+
+	volatile uint32_t *ring = gpu_dma + (GPU_DMA_TABLES + 0x9000u) / 4;
+	volatile uint32_t *memptrs = gpu_dma + (GPU_DMA_TABLES + 0x11000u) / 4;
+	memptrs[0] = 0;
+	memptrs[16] = 0;
+	unsigned w = 0;
+	/* CP_MEM_WRITE (0x3d) to GPU_MEMPTRS_IOVA + 0x40 with magic 0xa6160c0d. */
+	ring[w++] = pm4_type7(0x3du, 3);
+	ring[w++] = GPU_MEMPTRS_IOVA + 0x40u;
+	ring[w++] = 0;
+	ring[w++] = 0xa6160c0du;
+	flush_dcache64(gpu_pa + GPU_DMA_TABLES + 0x9000u, 0x9000u, 1);
+
+	gpu[0x0807] = w;                                        /* CP_RB_WPTR */
+	__asm__ volatile ("dsb sy" ::: "memory");
+
+	uint32_t rptr = 0, fence_val = 0;
+	for (unsigned waited = 0; waited < 100000; waited += 100) {
+		flush_dcache64(gpu_pa + GPU_DMA_TABLES + 0x11000u, 0x1000u, 1);
+		rptr = gpu[0x0806];
+		fence_val = memptrs[16];
+		if (fence_val == 0xa6160c0du && rptr == w) {
+			break;
+		}
+		IODelay(100);
+	}
+	printf("GPU phase 3 cp: rptr=%u/%u shadow_rptr=%u fence=%08x rbbm=%08x hw_fault=%08x cb0_fsr=%08x\n",
+	    rptr, w, memptrs[0], fence_val, gpu[0x0210], gpu[0x0821], cb0[0x58 / 4]);
+	if (fence_val == 0xa6160c0du) {
+		sirius_gpu_state[0] = 15;
+		gmu_report("Phase 3: GMU+GX+SMMU+SQE+CP fence 0xa6160c0d ok");
+	} else {
+		gmu_report("Phase 3: CP ring submitted, awaiting fence");
+	}
+}
+
 static void
 gmu_boot(void)
 {
@@ -735,6 +950,9 @@ gmu_boot(void)
 	volatile uint32_t *log = gmu_mem(GMU_LOG_IOVA);
 	printf("GPU gmu log %08x %08x %08x %08x\n", log[0], log[1], log[2], log[3]);
 	gmu_report("GMU up, HFI v1 answers");
+	if (gpu_mode >= 3) {
+		gpu_phase3(gx, mx);
+	}
 }
 
 static void
@@ -834,7 +1052,7 @@ sirius_gpu_start(void)
 	unsigned enabled = 0;
 	void *thread = 0;
 	PE_parse_boot_argn("sirius-gpu", &enabled, sizeof(enabled));
-	if (enabled != 1 && enabled != 2) {
+	if (enabled < 1 || enabled > 4) {
 		return;
 	}
 	gpu_mode = enabled;

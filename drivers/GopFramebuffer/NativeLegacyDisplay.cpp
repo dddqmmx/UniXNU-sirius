@@ -92,6 +92,38 @@ extern "C" uint64_t mach_continuous_time(void);
 static inline bool nativeBgra(uint32_t format,uint32_t planes) {
     return (format==0x42475241 && !planes) || (format==0x26424741 && planes<=1);
 }
+static uint16_t cachedColMap[2048];
+static uint32_t cachedColMapW,cachedColMapLw;
+static uint64_t scaledRowWords[1024];
+struct SurfaceMapCache {
+    OSObject *surface;
+    IOMemoryDescriptor *memory;
+    IOMemoryMap *map;
+    uint64_t used;
+};
+static SurfaceMapCache surfaceMapCache[4];
+static uint64_t surfaceMapClock;
+static IOMemoryMap *getCachedSurfaceMap(OSObject *surface,IOMemoryDescriptor *memory,IOOptionBits options) {
+    ++surfaceMapClock;
+    for(unsigned i=0;i<4;++i) {
+        if(surfaceMapCache[i].surface==surface && surfaceMapCache[i].memory==memory && surfaceMapCache[i].map) {
+            surfaceMapCache[i].used=surfaceMapClock;
+            surfaceMapCache[i].map->retain();
+            return surfaceMapCache[i].map;
+        }
+    }
+    IOMemoryMap *m=memory->map(options);
+    if(!m)return nullptr;
+    unsigned pick=0;
+    for(unsigned i=1;i<4;++i) {
+        if(!surfaceMapCache[i].map){pick=i;break;}
+        if(surfaceMapCache[i].used<surfaceMapCache[pick].used)pick=i;
+    }
+    if(surfaceMapCache[pick].map)surfaceMapCache[pick].map->release();
+    surfaceMapCache[pick]={surface,memory,m,surfaceMapClock};
+    m->retain();
+    return m;
+}
 class NativeLegacyDisplay : public IOMobileFramebufferLegacy {
     OSDeclareDefaultStructors(NativeLegacyDisplay)
     IOMemoryMap *bootMapping=nullptr;
@@ -414,7 +446,7 @@ public:
                 uint64_t lStride=native_legacy_surface_stride(layerSurf);
                 if(!layerMem || !layerMem->metaCast("IOMemoryDescriptor") || !lw || !lh || lw>16384 || lh>16384 ||
                    lStride<lw*4 || layerMem->getLength()<lStride*lh)continue;
-                IOMemoryMap *lMap=layerMem->map(kIOMapAnywhere|kIOMapReadOnly|(sourceCached?kIOMapCopybackCache:0));
+                IOMemoryMap *lMap=getCachedSurfaceMap(layerSurf,layerMem,kIOMapAnywhere|kIOMapReadOnly|(sourceCached?kIOMapCopybackCache:0));
                 if(!lMap || !lMap->getVirtualAddress() || lMap->getLength()<lStride*lh){OSSafeReleaseNULL(lMap);continue;}
                 sirius_fb_source_cache=(uint32_t)(lMap->getMapOptions()&kIOMapCacheMask);
                 if(uint64_t physical=lMap->getPhysicalAddress())sirius_fb_source_wimg=pmap_cache_attributes((unsigned int)(physical>>12));
@@ -426,28 +458,45 @@ public:
                 }
                 if(layersCopied==0 && dstX==0 && dstY==0 && (lw!=width || lh!=height) && width<=2048 && lw!=height) {
                     // Full-frame scaled surface (e.g. iPad7,1 1536x2048 canvas -> 1080x2240 physical GOP scanout).
-                    uint16_t colMap[2048];
-                    for(uint32_t x=0;x<width;++x)colMap[x]=(uint16_t)(((uint32_t)x*(uint32_t)lw)/width);
+                    // Flush the entire source surface once outside the row loop so dsb sy does not stall write-combining on every row.
+                    if(cachedColMapW!=width || cachedColMapLw!=(uint32_t)lw) {
+                        for(uint32_t x=0;x<width;++x)cachedColMap[x]=(uint16_t)(((uint32_t)x*(uint32_t)lw)/width);
+                        cachedColMapW=width;cachedColMapLw=(uint32_t)lw;
+                    }
+                    const uint16_t *colMap=cachedColMap;
                     uintptr_t dstBase=(uintptr_t)bootMapping->getVirtualAddress();
                     uintptr_t srcBase=(uintptr_t)lMap->getVirtualAddress();
+                    if(sourceCached)flush_dcache64((addr64_t)srcBase,(unsigned)(lh*lStride),FALSE);
                     uint64_t t0,t1;__asm__ volatile("isb\n\tmrs %0, cntpct_el0":"=r"(t0));
                     uint32_t lastSy=UINT32_MAX;
+                    uint64_t *rowWords=scaledRowWords;
+                    const uint32_t words64=width/2;
                     for(uint32_t y=0;y<copyHeight;++y) {
                         uint32_t sy=(uint32_t)(((uint64_t)y*lh)/height);
                         if(sy>=lh)sy=(uint32_t)lh-1;
-                        const uint32_t *in=reinterpret_cast<const uint32_t *>(srcBase+(uint64_t)sy*lStride);
-                        if(sourceCached && sy!=lastSy){flush_dcache64((addr64_t)in,(unsigned)(lw*4),FALSE);lastSy=sy;}
                         volatile uint64_t *out64=reinterpret_cast<volatile uint64_t *>(dstBase+(uint64_t)y*video.v_rowBytes);
-                        uint32_t x=0;
-                        for(;x+8<=width;x+=8) {
-                            uint64_t a=(uint64_t)in[colMap[x]]|((uint64_t)in[colMap[x+1]]<<32);
-                            uint64_t b=(uint64_t)in[colMap[x+2]]|((uint64_t)in[colMap[x+3]]<<32);
-                            uint64_t c=(uint64_t)in[colMap[x+4]]|((uint64_t)in[colMap[x+5]]<<32);
-                            uint64_t d=(uint64_t)in[colMap[x+6]]|((uint64_t)in[colMap[x+7]]<<32);
-                            out64[x/2]=a;out64[x/2+1]=b;out64[x/2+2]=c;out64[x/2+3]=d;
+                        if(sy!=lastSy) {
+                            const uint32_t *in=reinterpret_cast<const uint32_t *>(srcBase+(uint64_t)sy*lStride);
+                            uint32_t x=0;
+                            for(;x+8<=width;x+=8) {
+                                uint64_t a=(uint64_t)in[colMap[x]]|((uint64_t)in[colMap[x+1]]<<32);
+                                uint64_t b=(uint64_t)in[colMap[x+2]]|((uint64_t)in[colMap[x+3]]<<32);
+                                uint64_t c=(uint64_t)in[colMap[x+4]]|((uint64_t)in[colMap[x+5]]<<32);
+                                uint64_t d=(uint64_t)in[colMap[x+6]]|((uint64_t)in[colMap[x+7]]<<32);
+                                rowWords[x/2]=a;rowWords[x/2+1]=b;rowWords[x/2+2]=c;rowWords[x/2+3]=d;
+                                out64[x/2]=a;out64[x/2+1]=b;out64[x/2+2]=c;out64[x/2+3]=d;
+                            }
+                            uint32_t *row32=reinterpret_cast<uint32_t *>(rowWords);
+                            volatile uint32_t *out32=reinterpret_cast<volatile uint32_t *>(out64);
+                            for(;x<width;++x){uint32_t px=in[colMap[x]];row32[x]=px;out32[x]=px;}
+                            lastSy=sy;
+                        } else {
+                            uint32_t w=0;
+                            for(;w+4<=words64;w+=4) {
+                                out64[w]=rowWords[w];out64[w+1]=rowWords[w+1];out64[w+2]=rowWords[w+2];out64[w+3]=rowWords[w+3];
+                            }
+                            for(;w<words64;++w)out64[w]=rowWords[w];
                         }
-                        volatile uint32_t *out32=reinterpret_cast<volatile uint32_t *>(out64);
-                        for(;x<width;++x)out32[x]=in[colMap[x]];
                     }
                     __asm__ volatile("dsb sy\n\tisb\n\tmrs %0, cntpct_el0":"=r"(t1));
                     copyTicks+=t1-t0;
@@ -534,7 +583,7 @@ public:
             }
             return;
         }
-        IOMemoryMap *source=memory->map(kIOMapAnywhere|kIOMapReadOnly|(sourceCached?kIOMapCopybackCache:0));
+        IOMemoryMap *source=getCachedSurfaceMap(surface,memory,kIOMapAnywhere|kIOMapReadOnly|(sourceCached?kIOMapCopybackCache:0));
         if(!source || !source->getVirtualAddress() || source->getLength()<allocation) {
             OSSafeReleaseNULL(source);transferred=true;native_legacy_transfer_observed(kIOReturnNoMemory,request,0);finishTransfer(request);return;
         }
@@ -569,9 +618,6 @@ public:
         {
             // Store only what changed since the previous frame (the scanout memory is slow device memory).
             uint64_t need=(uint64_t)width*height*4;
-            // Differential copy is opt-in (sheng-fb-diff=1): on hardware it reads the whole source every frame and was not faster
-            // than the plain copy (143-285 ms per swap either way), and the first boots with it were followed by an unresponsive
-            // lock screen that disappeared with the plain copy (int-005).
             static int diffOff=-1;
             if(diffOff<0){unsigned v=0;PE_parse_boot_argn("sheng-fb-diff",&v,sizeof v);diffOff=(v!=1);}
             if(!diffOff && !shadow && need<=(64ull<<20)){shadow=IOMallocAligned((vm_size_t)need,16384);if(shadow){shadowBytes=need;shadowValid=false;}}

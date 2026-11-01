@@ -672,7 +672,7 @@ touch_thread(void *parameter, int wait_result)
 		if (changed) {
 			publish_contacts();
 		}
-		IOSleep(contact_down ? 8 : 16);
+		IOSleep(contact_down ? 4 : 12);
 	}
 }
 

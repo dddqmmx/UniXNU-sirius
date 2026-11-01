@@ -142,3 +142,22 @@ Deployment also requires the currently unresponsive unit to return to ABL fastbo
   - `Setup.app` skipped completely; `Spotlight` launched at 205.7 s (PID 238), `TOUCH hid: Home press dispatched (gesture)` at 206.6 s, `InputUI` at 214.6 s (PID 240).
   - Tapping the Home Screen launched `splashboardd` (PID 242) and **`Preferences` (Settings app, PID 243) at 231.4 s**.
   - `NEMMC fb copies 211`, `NEMMC fb swaps calls/acc/rej 0000d4000d400000` (212 swaps submitted, 212 accepted, 0 rejected), `NEMMC touch edge/home 0100180006002002` (`edge::install = 1`, 24 contacts, 6 `FromEdgeTip` gestures, 2 Home button presses), `enospc_count: 0`, `idle 95–99%`.
+
+## Display copy latency optimization (38 ms -> 5.77 ms) and Adreno 616 GPU Phase 3 hardware verification (2026-11-01 22:53)
+
+- Performance bottlenecks identified and resolved:
+  1. **2048 per-row `dsb sy` barriers in `NativeLegacyDisplay.cpp`**: Calling `flush_dcache64` inside the per-row scaling loop executed 2048 full-system `dsb sy` barriers per frame, stalling the CPU write-combine gathering buffer after every scanline and inflating `1536x2048 -> 1080x2240` copy time to 31–38 ms. Moving `flush_dcache64` outside the row loop (one pass per frame), caching `cachedColMap`, and reusing `scaledRowWords` for the 192 duplicate rows eliminated the per-row barrier stalls.
+  2. **Per-frame 3072-page `IOMemoryMap` setup and cross-CPU TLB shootdown**: Added a 4-entry `surfaceMapCache` in `NativeLegacyDisplay.cpp` so the compositor's triple-buffered `IOSurface` mappings are retained and reused across swaps instead of mapping and unmapping 12.58 MB on every frame.
+  3. **Touch polling cadence**: Reduced active touch polling sleep in `package/sirius_touch.c` from `8 ms / 16 ms` to `4 ms / 12 ms` (125 Hz while finger is down).
+- Adreno 616 GPU Phase 3 (`package/sirius_gpu.c` & `scripts/build-sirius-gpu.py`, `sirius-gpu=3`):
+  - Embedded `a630_sqe.fw` (`34188` bytes, SHA-256 `1c21b527d9183487cc550dabbb3f43e555df5a977a461934fc61f0635a9aa90c`, `8546` instruction words).
+  - Sent HFI v1 `HFI_H2F_MSG_PERF_TBL` (id 4, 59 words), `HFI_H2F_MSG_BW_VOTE_TBL` (id 3, 160 words) and `HFI_H2F_MSG_TEST` (id 5, 1 word) -> all replied with `error=0`.
+  - Enabled `GPUCC_GX_GMU_CBCR` (`0x1064`, `cbcr=0x00000001 on`), asserted `GMU_OOB_GPU_SET` (`oob_gpu=1`, `gx_gdscr=0xf8222000`, `sptprac=0x00000028`), and verified 3D GPU MMIO at `0x05000000` (`rbbm_status=0x00000001`).
+  - Programmed GPU SMMUv2 Context Bank 0 for Stream 0 (3D GPU core), mapped 84 KiB DMA at IOVA `0x10000000` (`ATS1PR` hardware translation verified: `10000000 -> par=40000000a8c25b80 ok`), loaded `a630_sqe.fw`, and initialized UCHE/GMEM (`512 KiB`) and CP ringbuffer registers (`CP_SQE_INSTR_BASE=0x10000000`, `CP_RB_BASE=0x10009000`, `CP_RB_RPTR_ADDR=0x10011000`, `phase=13` / `0x0d`).
+- Hardware verification (`out/boot-perf-fast.timeline` & `out/boot-perf-fast-live.timeline`, kernel `dc3bcc04283850f3eb55124bd869369f3b3b5a18e2529144c2d1926652c1f094`, vendor payload `aa62b8c36092da986c253fed83148af08cc80266a0decd42da7f57f8cd8a66a3`):
+  - `GPU phase 3 hfi tables: perf=0 bw=0 test=0`
+  - `GPU phase 3 gx power: oob_gpu=1 gx_gdscr=f8222000 sptprac=00000028`
+  - `GPU phase 3 smmu cb0 ats1pr 10000000 -> par=40000000a8c25b80 ok`
+  - `GPU phase 3 ready: sqe_base=10000000 rb_base=10009000 rptr_addr=10011000 rbbm=00800001 hw_fault=00000000`
+  - `NEMMC gpu phase/init/hfi/ver 0dface0110060000` (`phase = 13`)
+  - **`NEMMC fb copy last us 5769`, `NEMMC fb copy mean us 9651`** (reduced from `38,612 us` to `5.77 ms` last / `9.65 ms` mean, **~6.7x faster**).
