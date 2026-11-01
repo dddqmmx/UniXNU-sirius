@@ -480,7 +480,9 @@ avdd_on(void)
 
 /* Contacts by FTS touch id (0..15): the published set is rebuilt from it after every batch of events. */
 static int contact_x[16], contact_y[16];
-static uint16_t contact_down;
+static int contact_down_x[16], contact_down_y[16];
+static uint16_t contact_down, contact_first_frame;
+extern void sirius_request_home_press(void);
 
 static void
 publish_contacts(void)
@@ -490,12 +492,18 @@ publish_contacts(void)
 	__asm__ volatile ("dmb ish" ::: "memory");
 	for (unsigned id = 0; id < 16 && count < 10; ++id) {
 		if (contact_down & (1u << id)) {
+			int hy = contact_y[id] * HID_Y_UNITS / FTS_Y_MAX;
+			if ((contact_first_frame & (1u << id)) && contact_y[id] >= 2050) {
+				/* Ensure touches starting in the bottom bezel/home-bar band trigger NativeHidInput's FromEdgeTip (y > 65536 - kEdgeY). */
+				hy = 20200;
+			}
 			native_touch_ids[count] = (int)id;
 			native_touch_xs[count] = contact_x[id] * HID_X_UNITS / FTS_X_MAX;
-			native_touch_ys[count] = contact_y[id] * HID_Y_UNITS / FTS_Y_MAX;
+			native_touch_ys[count] = hy;
 			++count;
 		}
 	}
+	contact_first_frame = 0;
 	native_touch_count = count;
 	__asm__ volatile ("dmb ish" ::: "memory");
 	native_touch_seq = native_touch_seq + 1;
@@ -517,6 +525,9 @@ handle_event(const uint8_t *event)
 	case EVT_MOTION:
 		if (!(contact_down & (1u << id))) {
 			sirius_touch_state[4] = sirius_touch_state[4] + 1;
+			contact_down_x[id] = x;
+			contact_down_y[id] = y;
+			contact_first_frame |= (uint16_t)(1u << id);
 			printf("TOUCH down id=%u x=%d y=%d\n", id, x, y);
 		} else if ((sirius_touch_state[3] & 31) == 0) {
 			printf("TOUCH move id=%u x=%d y=%d\n", id, x, y);
@@ -528,8 +539,14 @@ handle_event(const uint8_t *event)
 	case EVT_LEAVE:
 		if (contact_down & (1u << id)) {
 			printf("TOUCH up id=%u x=%d y=%d\n", id, x, y);
+			/* Bottom-edge swipe-up or home-bar tap: also request a virtual Home (Consumer Menu 0x40) press for Setup Hello unlock. */
+			if ((contact_down_y[id] >= 2050 && contact_down_y[id] - y >= 60) ||
+			    (contact_down_y[id] >= 2100 && y >= 2080 && x >= 320 && x <= 760)) {
+				sirius_request_home_press();
+			}
 		}
 		contact_down &= (uint16_t)~(1u << id);
+		contact_first_frame &= (uint16_t)~(1u << id);
 		return 1;
 	case EVT_ERROR:
 		printf("TOUCH chip error event %02x %02x %02x %02x\n", event[1], event[2], event[3], event[4]);

@@ -44,8 +44,61 @@ void native_hid_input_observed(unsigned event, int result) {
         native_hid_input_results[event] = result;
     }
 }
-// The keyboard device's Home presses; this board publishes only the touch screen.
-bool native_hid_input_requested(void) { return false; }
+extern volatile unsigned sirius_setup_exec_second __attribute__((weak_import));
+extern volatile unsigned sirius_setup_exec_count __attribute__((weak_import));
+extern volatile unsigned sirius_springboard_exec_second __attribute__((weak_import));
+extern volatile unsigned sirius_springboard_exec_count __attribute__((weak_import));
+extern "C" unsigned boot_progress_uptime_seconds(void) __attribute__((weak_import));
+extern volatile uint64_t native_legacy_copy_n __attribute__((weak_import));
+static volatile uint32_t sirius_home_press_pending;
+static unsigned last_auto_setup_count;
+static unsigned last_auto_sb_count;
+static unsigned auto_home_stage;
+static unsigned auto_sb_home_stage;
+
+extern "C" void sirius_request_home_press(void) {
+    sirius_home_press_pending = 1;
+}
+
+// The keyboard device's Home (Consumer Menu 0x40) presses: triggered either by a bottom-edge swipe/tap or automatically once Setup
+// or SpringBoard's initial cover sheet is up.
+bool native_hid_input_requested(void) {
+    if (__atomic_exchange_n(&sirius_home_press_pending, 0, __ATOMIC_ACQUIRE)) {
+        auto_home_stage = 1;
+        auto_sb_home_stage = 1;
+        IOLog("TOUCH hid: Home press dispatched (gesture)\n");
+        return true;
+    }
+    if (&sirius_setup_exec_count && &sirius_setup_exec_second && &boot_progress_uptime_seconds && sirius_setup_exec_count > 0) {
+        if (last_auto_setup_count != sirius_setup_exec_count) {
+            last_auto_setup_count = sirius_setup_exec_count;
+            auto_home_stage = 0;
+        }
+        unsigned now = boot_progress_uptime_seconds();
+        unsigned start = sirius_setup_exec_second;
+        uint64_t copies = &native_legacy_copy_n ? native_legacy_copy_n : 0;
+        if (auto_home_stage == 0 && now >= start + 12 && copies >= 60) {
+            auto_home_stage = 1;
+            IOLog("TOUCH hid: Home press dispatched (auto-hello at %us, copies=%llu)\n", now, (unsigned long long)copies);
+            return true;
+        }
+    } else if (&sirius_springboard_exec_count && &sirius_springboard_exec_second && &boot_progress_uptime_seconds &&
+               sirius_springboard_exec_count > 0) {
+        if (last_auto_sb_count != sirius_springboard_exec_count) {
+            last_auto_sb_count = sirius_springboard_exec_count;
+            auto_sb_home_stage = 0;
+        }
+        unsigned now = boot_progress_uptime_seconds();
+        unsigned start = sirius_springboard_exec_second;
+        uint64_t copies = &native_legacy_copy_n ? native_legacy_copy_n : 0;
+        if (auto_sb_home_stage == 0 && now >= start + 16 && copies >= 20) {
+            auto_sb_home_stage = 1;
+            IOLog("TOUCH hid: Home press dispatched (auto-lockscreen at %us, copies=%llu)\n", now, (unsigned long long)copies);
+            return true;
+        }
+    }
+    return false;
+}
 // NativeHidInput's hardware-button source (weak_import there, but the static kernel link still needs a definition): this board
 // has no button driver yet, so no sink is ever called. The touch screen device does not register one either.
 void native_buttons_set_sink(void (*)(void *, uint32_t), void *) {}

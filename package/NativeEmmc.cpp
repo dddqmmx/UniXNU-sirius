@@ -151,7 +151,8 @@ extern "C" volatile uint32_t native_legacy_rej_rects[2][4] __attribute__((weak_i
 extern "C" volatile uint64_t native_legacy_rej_surface[7] __attribute__((weak_import));
 extern "C" volatile uint64_t native_legacy_frame_stats[32][5] __attribute__((weak_import));
 extern "C" volatile uint32_t native_aks_opens, native_aks_calls __attribute__((weak_import));
-extern "C" volatile uint32_t sirius_touch_state[8], sirius_hid_stage, native_hid_input_events[8] __attribute__((weak_import));
+extern "C" volatile uint32_t sirius_touch_state[8], sirius_hid_stage, native_hid_input_events[8],
+    native_touch_edge_stats[4] __attribute__((weak_import));
 
 /* Post-exec probes (patches/xnu/sirius-post-exec-trace.patch). The init exec returns 0 and then
  * the stack asks for no block again, which cannot be told apart from "the launchd thread never
@@ -473,6 +474,9 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 				    ((uint64_t)(sirius_touch_state[4] & 0xffffu) << 32) |
 				    ((uint64_t)(sirius_hid_stage & 0xffu) << 24) |
 				    (native_hid_input_events[6] & 0xffffffu));
+					if (&native_touch_edge_stats) {
+						emmc_log_hex("NEMMC touch edge/home ", ((uint64_t)(native_touch_edge_stats[0] & 0xffu) << 56) | ((uint64_t)(native_touch_edge_stats[1] & 0xffffu) << 40) | ((uint64_t)(native_touch_edge_stats[2] & 0xffffu) << 24) | ((uint64_t)(native_hid_input_events[4] & 0xfffu) << 12) | (native_hid_input_events[5] & 0xfffu));
+					}
 			}
 		}
 		if ((nemmc_heartbeats % 16) == 0) {

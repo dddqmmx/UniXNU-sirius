@@ -404,7 +404,6 @@ public:
             directToBoot();
             uint64_t copyTicks=0;
             uint32_t copyHeight=height;
-            if(&boot_progress_panel_top && boot_progress_panel_top && boot_progress_panel_top<height)copyHeight=boot_progress_panel_top;
             unsigned layersCopied=0;
             const unsigned char *reqBytes=reinterpret_cast<const unsigned char *>(request);
             for(unsigned k=0;k<4;++k) {
@@ -584,9 +583,7 @@ public:
         }
         if(stored==UINT64_MAX) {
             shadowValid=false;
-            // sirius board fork: stop above the live diagnostics panel (package/BootProgress.c), so frames do not paint over it.
             uint32_t copyHeight=height;
-            if(&boot_progress_panel_top && boot_progress_panel_top && boot_progress_panel_top<height)copyHeight=boot_progress_panel_top;
             if(!native_legacy_copy_pixels(reinterpret_cast<volatile void *>(bootMapping->getVirtualAddress()),
                 bootMapping->getLength(),video.v_rowBytes,reinterpret_cast<const void *>(source->getVirtualAddress()),
                 source->getLength(),sourceStride,width,copyHeight)) {

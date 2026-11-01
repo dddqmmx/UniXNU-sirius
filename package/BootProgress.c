@@ -720,8 +720,22 @@ static int spawn_logging(void) {
   if(spawn_log<0){int v=0;PE_parse_boot_argn("sirius-spawn-log",&v,sizeof v);spawn_log=(v==1);}
   return spawn_log;
 }
+volatile unsigned sirius_setup_exec_second;
+volatile unsigned sirius_setup_exec_count;
+volatile unsigned sirius_springboard_exec_second;
+volatile unsigned sirius_springboard_exec_count;
+unsigned boot_progress_uptime_seconds(void) { return seconds(); }
 void boot_progress_process_stage(int pid,const char *name,const char *text) {
-  if(enabled && !strcmp(text,"exec process signature accepted") && spawn_logging())printf("SPAWN %us exec %d %.24s\n",seconds(),pid,name?name:"?");
+  if(enabled && !strcmp(text,"exec process signature accepted")) {
+    if(name && !strcmp(name,"Setup")) {
+      sirius_setup_exec_second=seconds();
+      sirius_setup_exec_count=sirius_setup_exec_count+1;
+    } else if(name && !strcmp(name,"SpringBoard")) {
+      sirius_springboard_exec_second=seconds();
+      sirius_springboard_exec_count=sirius_springboard_exec_count+1;
+    }
+    if(spawn_logging())printf("SPAWN %us exec %d %.24s\n",seconds(),pid,name?name:"?");
+  }
   if(!enabled || !take())return;
   char stamped[BP_COLS];unsigned now=seconds();
   if(!strncmp(text,"exec process signature",22))census_note(name,0);

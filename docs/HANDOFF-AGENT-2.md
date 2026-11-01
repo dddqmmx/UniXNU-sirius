@@ -1,18 +1,18 @@
 # sirius 阶段二：本机状态与验证结论
 
-更新：2026-10-31。
+更新：2026-11-01。
 
 ## 当前结论
 
-**这台设备已成功挂载并在线扩容 8 GiB 持久化 APFS Data 容器（0 ENOSPC），通过 launchd early boot，启动 `SpringBoard`、`backboardd` 与 `Setup.app`（iOS 欢迎界面），并以约 19 fps（平均每帧 CPU 拷贝 ~10 ms）持续呈现非黑 UI 帧（已累计确认 5514 帧提交与接受、0 拒绝，且内置触摸屏 HID 驱动已绑定并投递触摸报告）。**
+**这台设备已成功挂载并在线扩容 8 GiB 持久化 APFS Data 容器（0 ENOSPC），通过 `sirius-skip-setup=1` 直接跳过 `Setup.app` 进入完整的 iOS `SpringBoard` 主屏幕桌面（已启动 `Spotlight`、`InputUI`，并通过触摸点击主屏幕图标成功打开系统 `Preferences.app` 设置应用），在完整 `1080×2240` 全屏（`1536×2048 -> 1080×2240` 缩放，0 拒帧）下流畅响应点击、滑动、底部边缘手势（`FromEdgeTip`）与虚拟 Home 键（Consumer Menu `0x40`）。**
 
 完整证据、时间线和镜像哈希见 [本机启动核验](evidence/sirius-20261030-local-boot.md)。
 
-## 已上机验证的最新镜像（2026-10-31 23:08）
+## 已上机验证的最新镜像（2026-11-01 21:48）
 
-- 原始 kernel SHA-256：`ff57d694b4ba38fadd74f396e51e49669f941f180fb0e87e776850c770b96dc5`
-- 完整 vendor 镜像 SHA-256：`fad069ea153835c7244de7ea8dc782f34fec7a8dc0f76b393b439173346e0825`
-- 镜像路径：`../UniXNU/out/sirius/ipados-17.7.11-21H461/sirius/payload/sirius-payload-swapfix.img`
+- 原始 kernel SHA-256：`3b36199b7231485d7713023b3ea356ec81db6e17d5737724cd784669beeadd1c`
+- 完整 vendor 镜像 SHA-256：`ddd8d1faeab4f746978d82a493c427e439a7437f14b146ffc957ed454742e0b1`
+- 镜像路径：`../UniXNU/out/sirius/ipados-17.7.11-21H461/sirius/payload/sirius-payload-desktop.img`
 - 镜像内 trust cache：`7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7`
 - 镜像内 32 MiB 原始干净 Data seed：`cd3bbd46d39bd105254043a3a39966a83d20ff162d167a2e2fbbf02c431abd35`（卷 UUID `7F00D031-C00B-4368-A3FF-D4788A1323D6`）
 

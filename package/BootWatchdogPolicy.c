@@ -96,11 +96,45 @@ static const struct {const char *path,*text;} skip_setup_files[]={
   "<key>BKNoWatchdogs</key><true/><key>FBLaunchWatchdogExceptions</key><dict><key>com.apple.purplebuddy</key><real>100</real></dict>"
   "<key>MCForceShowCloudConfigurationUI</key><false/><key>SBDisableAutoDim</key><true/><key>SBDontDimOrLockOnAC</key><true/>"
   "<key>SBDisableIdleSleep</key><true/>" PLIST_TAIL},
+ {"/private/var/mobile/Library/Preferences/com.apple.migration.plist",PLIST_HEAD
+  "<key>LastSystemVersion</key><string>21H461</string>"
+  "<key>DMUserDataDisposition</key><dict><key>SyntheticDidUpgrade</key><false/><key>buildVersion</key><string>21H461</string></dict>"
+  PLIST_TAIL},
+ {"/private/var/mobile/Library/Preferences/com.apple.DataMigration.plist",PLIST_HEAD
+  "<key>LastSystemVersion</key><string>21H461</string>"
+  "<key>DMUserDataDisposition</key><dict><key>SyntheticDidUpgrade</key><false/><key>buildVersion</key><string>21H461</string></dict>"
+  PLIST_TAIL},
 };
 static void sheng_boot_skip_setup(proc_t p,uint64_t scratch) {
+ static const char *const dirs[]={
+  "/private/var/containers",
+  "/private/var/containers/Bundle",
+  "/private/var/containers/Data",
+  "/private/var/containers/Data/System",
+  "/private/var/containers/Shared",
+  "/private/var/containers/Shared/SystemGroup",
+  "/private/var/containers/Temp",
+ };
+ for(unsigned i=0;i<sizeof(dirs)/sizeof(dirs[0]);++i) {
+  int32_t res=0;
+  if(!copyout(dirs[i],scratch,strlen(dirs[i])+1)) {
+   struct mkdir_args md={.path=scratch,.mode=0755};
+   (void)mkdir(p,&md,&res);
+  }
+ }
  for(unsigned i=0;i<sizeof(skip_setup_files)/sizeof(skip_setup_files[0]);++i) {
   int error=sheng_boot_write_file(p,scratch,skip_setup_files[i].path,skip_setup_files[i].text,501,501,0600);
   printf("sirius skip setup: %s %d\n",skip_setup_files[i].path,error);
+ }
+ static const char *const mg_files[]={
+  "/private/var/mobile/Library/Preferences/com.apple.MobileGestalt.plist",
+  "/private/var/mobile/Library/Preferences/com.apple.mobilegestalt.plist"};
+ for(unsigned i=0;i<sizeof(mg_files)/sizeof(mg_files[0]);++i) {
+  int32_t rm_res=0;
+  if(!copyout(mg_files[i],scratch,strlen(mg_files[i])+1)) {
+   struct unlink_args rm={.path=scratch};
+   (void)unlink(p,&rm,&rm_res);
+  }
  }
 }
 
@@ -145,6 +179,16 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
   // Always apply SpringBoard's no-watchdog and no-auto-dim/no-idle-sleep prefs on this board (no power button to wake).
   int sb_err=sheng_boot_write_file(p,scratch,skip_setup_files[3].path,skip_setup_files[3].text,501,501,0600);
   printf("sirius springboard prefs: %s %d\n",skip_setup_files[3].path,sb_err);
+  static const char *const mg_files[]={
+   "/private/var/mobile/Library/Preferences/com.apple.MobileGestalt.plist",
+   "/private/var/mobile/Library/Preferences/com.apple.mobilegestalt.plist"};
+  for(unsigned i=0;i<sizeof(mg_files)/sizeof(mg_files[0]);++i) {
+   int32_t rm_res=0;
+   if(!copyout(mg_files[i],scratch,strlen(mg_files[i])+1)) {
+    struct unlink_args rm={.path=scratch};
+    (void)unlink(p,&rm,&rm_res);
+   }
+  }
  }
  if(!enabled && !jobs[0] && !lite)return 0;
  policy[0]=0;strlcat(policy,policy_head,sizeof(policy));
