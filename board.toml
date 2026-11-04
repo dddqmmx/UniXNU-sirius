@@ -12,7 +12,9 @@ schema_version = 2
 name = "sirius"
 soc = "SDM710"
 soc_source = "sdm710"
-os_profile = "ipados-17.7.11-21H461"
+# iOS 26.5.2 (23F84) from the iPadOS 26.5.2 restore image, run on an arm64 kernel: this board
+# has no pointer authentication, so there is no prelink either (the target kexts are arm64e).
+os_profile = "ipados-26.5.2-23F84-arm64"
 description = "Xiaomi Mi 8 SE"
 kit = "sirius"
 
@@ -28,38 +30,18 @@ include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot", "GopFramebuffe
 # SDM710 (Kryo 360, Cortex-A75/A55) is ARMv8.2 without pointer authentication, so it runs
 # arm64 userlands only. The 21H461 kernelcache matches the XNU 23.6.0 source pinned by the
 # OS profile and the prelink roots it selects.
-[ipsw]
-url = "https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw"
-product = "iPad7,1"
-version = "17.7.11"
-build = "21H461"
-device_class = "j120ap"
-chip_id = 0x8011
-board_id = 12
-fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]
+# [ipsw] is not set here: the OS profile (profiles/os/ipados-26.5.2-23F84-arm64) carries
+# the iPad17,3 iPadOS 26.5.2 23F84 restore image and the Apple identity the ADT reproduces.
 
 [kernel]
-defconfig = "sirius_defconfig"
+defconfig = "sirius_ios26_defconfig"
 config_fragments = ["arch:configs/common.config", "soc:configs/sdm710.config", "os:configs/ipados.config"]
-patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches/xnu/series", "device:patches/xnu/series"]
-archives = [
-  "build-corecrypto-14.py",
-  "build-corecrypto-14.py --namespace",
-  "component:ArmDTPlatform",
-  "component:ArmCpu",
-  "build-libpthread-kernel.py",
-  "component:AppleKeyStoreState",
-  "component:ShengHidInput",          # board recipe scripts/build-sheng-hid-input.py; linked by the display archive below
-  "build-native-legacy-display.py",   # the NativeLegacyDisplay / GopFramebuffer late archive
-  "build-boot-progress.py",           # the boot progress display (kits/sirius, the readable kernel log + SPMI reset)
-  "build-sirius-pmgr.py",             # the ApplePMGRNub advertisement for AMFI (kits/sirius/SiriusPmgr.cpp)
-  "build-sirius-usb.py",              # the CDC-ACM log console (kits/sirius/sirius_usb.c)
-  "build-sirius-emmc.py",             # SDCC1 transport (kits/sirius/sirius_emmc.c)
-  "build-sirius-cpufreq.py",          # cpufreq-hw level request (kits/sirius/sirius_cpufreq.c)
-  "build-sirius-touch.py",            # FTS521 touch probe on QUP1 SE1 (kits/sirius/sirius_touch.c)
-  "build-sirius-gpu.py",              # Adreno 616: CX power, GMU/SMMU reads, GMU firmware boot (kits/sirius/sirius_gpu.c)
-  "build-native-emmc.py",             # the IOKit block driver (kits/sirius/NativeEmmc.cpp)
-]
+# arch and OS only: the SoC and device series of the iPadOS 17 port patch xnu-10063 and do not
+# apply to xnu-12377. The device adds its own 12377 patches deliberately.
+patch_series = ["arch:patches/xnu/series", "os:patches/xnu/series"]
+# build-xnu-12377.sh builds and links its own archives; the recipes of the iPadOS 17 port
+# below are for the xnu-10063 build.
+archives = []
 
 [device_tree]
 source = "device:dts/sirius.dts"
@@ -75,75 +57,34 @@ windows = [
 ]
 
 [payload]
-trust_cache_sha256 = ["7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7"]
+# trust_cache_sha256 is set once the 23F84 trust caches are extracted and bundled.
 volume = "SIRIUSESP"
 size_mib = 512                      # holds the kernel, trust cache, EFI binaries and optional 256 MiB RAM Data seed
 loader = "payload"                  # not "firmware": unixnu.toml gets [[driver]] Payloads/DarwinBoot.efi
-title = "sirius first boot: XNU to console"
+title = "sirius iOS 26.5.2 bring-up: arm64 xnu-12377 kernel"
 dram_size = "0x17d6c0000"
 panic_screen = true
+# Bring-up probe without a console: the kernel waits this many seconds after the first call to
+# entry_probe_reset_after inside _arm_init and then resets through PSCI, so the phone returns to
+# fastboot on its own and the elapsed time reports how far the kernel got. The band probes of
+# the entry patch stay in the image.
+entry_probe_reset_delay = 8
+entry_probe_reset_after = "_PE_init_platform"
 # The OS profile's four fixups (a list here replaces the profile's), then one of this board's: without a
 # Metal device CoreImage falls back to OpenGL, whose dispatch table is empty here, and iconservicesagent
 # jumps to address 0 in CI::GLContext::init. The fifth entry replaces CoreUI's [CIContext
 # contextWithOptions:] call in +[CUIShapeEffectStack sharedCIContext] (0x1a31d7b84 unslid, a bl) with
 # mov x0, xzr: the shared context is nil, the glyph rasterizer returns no image and IconFoundation checks
 # for that (cbz x26), so a vector symbol draws empty instead of killing the agent.
-text_fixups = [
-  "dyld_shared_cache_arm64.15,421e8bc,28ad1bb0008544f9,c0035fd6008544f9",
-  "dyld_shared_cache_arm64.13,1b05bec,44008052,24008052",
-  "dyld_shared_cache_arm64.13,1b05b08,44008052,24008052",
-  "BTAudioHALPlugin,38bec,ffc300d1f44f01a9,000080d2c0035fd6",
-  "dyld_shared_cache_arm64.11,34f3b84,979701944914d794,e0031faa4914d794",
-]
+# text_fixups index the iPadOS 17 shared cache; the 23F84 fixups come from the lowering
+# pipeline (docs/PORT-ios26.md, P4).
 kernel_args = [
-  "debug=0x14e",
-  "kt_fixed_zones=120",
-  "ml-timeout-lock-panic-scale=40",
-  "-no_slto_panic",
-  "boot-progress=2",                # draw the kernel console lines on the screen (the readable log)
-  "sheng-smp=1",                    # ArmCpu claims every /cpus nub: without it AppleARMCPU (kernelcache) takes the secondary nubs and panics on the non-Apple tree
-  "cpus=8",
+  "-v", "serial=3", "debug=0x14e",           # console on the USB transport, kernel debug mask
+  "cpus=8", "sheng-smp=1",                   # ArmCpu claims every /cpus nub
+  "armcpu-timer-intid=19",                   # SDM710 virtual timer is GIC PPI 3 (INTID 19)
   "armcpu-self-ipi=1",
-  "armcpu-timer-intid=19",          # SDM670/710 virtual timer is GIC PPI 3 (INTID 19), not the architectural PPI 27
-  "sheng-pmgr=2",                   # publish an ApplePMGRNub for the unchanged AMFI (kits/sirius/SiriusPmgr.cpp)
-  "sirius_usb=2",                   # CDC-ACM log console over DWC3 (patches/xnu/sirius-usb-console.patch)
-  "sirius_emmc_hs=3",              # card clock up to 100 MHz (1 = 25, 2 = 50, 3 = 100), each step proven
-                                    # against blocks read at 400 kHz; falls back to the last good one
-  "sirius_emmc_win=1",              # publish the SHNGROOT windows of [userdata] as block devices
-  "launchdsuffix=release",          # DEVELOPMENT: load /sbin/launchd directly and report its errno
-  "amfi_get_out_of_my_way=1",       # bring-up: let init exec from an unverified root
-  "sirius-allow-unverified=1",      # bring-up: NativeEmmc authorizes the SystemOS union mount (no owner policy)
-  "sirius-data-write=1",            # NativeEmmc publishes the persistent Data container behind the root image in
-                                    # userdata read-write when present, and falls back to the RAM seed otherwise
-  "sheng-disable-watchdogd=1",      # package/BootWatchdogPolicy.c disables com.apple.watchdogd before launchd
-  "sheng-lite=1",                   # disables the network/iCloud/photo daemons this phone has no use for
-  "sirius-skip-setup=1",            # package/BootWatchdogPolicy.c writes purplebuddy/springboard/migration done prefs before launchd
-  "sirius-skip-rootauth=1",         # the sealed-root answer needs the owner-root chain; see patches/xnu/sirius-skip-rootauth.patch
-  "offline-legacy-register=1",      # register GOP framebuffer service
-  "offline-legacy-gop=1",           # enable hardware GOP mapping
-  "offline-legacy-unit-scale=2",    # 2x display unit scale for high DPI
-  "offline-legacy-pm=1",            # publish display PM states
-  "offline-legacy-validate=1",      # validate swap requests
-  "offline-legacy-transfer=1",      # transfer framebuffers
-  "offline-legacy-cpu-present=1",   # CPU pixel copy presentation
-  "sirius-fb-wc=1",                 # drivers/GopFramebuffer (board fork): map the scanout write-combined
-  "sirius-fb-cached=1",             # read the write-combined source surface through a cacheable mapping
-  "offline-legacy-phase=4",         # phase 4 display subsystem registration under /arm-io
-  "offline-mobile-graphics-client=1", # support MobileGraphics client
-  "offline-mobile-graphics-load=1", # load MobileGraphics
-  "offline-apfs-load=1",            # load APFS
-  "sheng-vsync=60",                 # 60 Hz software vsync heartbeat
-  "sirius-cpufreq=1",               # kits/sirius/sirius_cpufreq.c: both clusters to their highest non-boost level
-  "offline-key-events=1",           # kits/sirius/KeyStoreProbe.cpp publishes the AppleKeyStoreState service
-  "sheng-aks=1",                    # its user client answers the state queries (no passcode, unlocked)
-  "sirius-spawn-log=1",             # package/BootProgress.c: a SPAWN console line per exec and exit, with the second
-  "sirius-touch=1",                 # package/sirius_touch.c: QUP1 SE1 I2C, FTS521 chip id, then the event FIFO
-  "sirius-touch-hid=1",             # package/SiriusHidProbe.cpp: publish the touch screen (ShengHidInput) to iOS
-  "sheng-touch-hid=1",              # NativeHidInput: add the touch screen collection to that combined device
-  "dk=0",                           # DriverKit off: the in-kernel IOHIDEventDriver matches instead
-  "sheng-banner=0",                 # yield the full 1080x2240 scanout once iOS owns the display (diagnostics stay on USB console)
-  "sirius-gpu=3",                   # package/sirius_gpu.c: Adreno 616 phases 1-3 (CX/GMU, HFI tables, GX, SMMU CB0, SQE, CP ring)
-  "validation_disables=0x10",       # KF_STACKSHOT_OVRD: user stackshots return KERN_NOT_SUPPORTED
+  # The iPadOS 17 arguments (sirius-emmc, offline-legacy-*, sheng-staged-apps, ...) name
+  # 10063 patches this kernel does not carry; each returns as its 12377 port lands.
 ]
 
 [payload.adt]
@@ -152,13 +93,25 @@ root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 owned_memory_size = "0xaa000000"
 
 [adt.chosen.bytes]
+# The DWC3 register aperture for scripts/native-dwc3-console.c: base 0x0a600000 (the SoC's USB3
+# controller) and size 0x100000, little-endian, so the console can map it and be the kernel's
+# transport after ExitBootServices.
+"unixnu,dwc3-console" = "0000600a000000000000100000000000"
 boot-manifest-hash = "5fd2fc139b688ddf071aa815c1ea75d26bcd994a528cf02e365661eab5139ec7b580d63ca9319e218962a2236f23faca"
 darwinboot-efi-map = "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 
+# Note: ephemeral-storage is intentionally NOT set in [adt.chosen.u32] so com.apple.datamigrator
+# runs the 4 filtered user-agnostic plugins (including SystemAppMigrator) on first boot after
+# sheng-staged-apps=1 populates /private/var/staged_system_apps.
+
 [adt.chosen.u32]
-# Bring-up: skip iOS's first-boot data migration. With /chosen/ephemeral-storage datamigrator skips every
-# plugin (os_variant_uses_ephemeral_storage). The staged system apps are not installed while it is set.
-ephemeral-storage = 1
+# Force a valid QSCRATCH VBUS/session so the controller enumerates for the host; the console
+# requires the aperture above to be exactly 0x0a600000 when this is set.
+"unixnu,qcom-usb0" = 1
+# Bring-up probe: wait this long after the first PE_init_kprintf serial_init and then reset
+# through PSCI, so a boot without a console still reports how far the kernel got. Removed once
+# the console or a board driver carries the log.
+"unixnu,dwc3-probe-reset-ms" = 8000
 
 [adt.product.string]
 model = "xiaomi,sirius"

@@ -11,6 +11,10 @@ on:
         description: Device repository ref (defaults to the ref of this run)
         required: false
         default: ""
+      unixnu_repository:
+        description: UniXNU repository to build with (a fork works; the branch must exist there)
+        required: false
+        default: "UniXNU/UniXNU"
       unixnu_ref:
         description: UniXNU ref to build with
         required: false
@@ -26,6 +30,19 @@ on:
         description: Optional shell commands run in the UniXNU checkout before the kernel build
         required: false
         default: ""
+      defconfig:
+        description: Device defconfig to build (configs/NAME)
+        required: false
+        default: "sirius_defconfig"
+      os_profile:
+        description: OS profile; it names the output directory out/<device>/<profile>/<config>
+        required: false
+        default: "ipados-17.7.11-21H461"
+      storage_bindings_check:
+        description: Check the recorded IOStorageFamily bindings against the prelinked kernel (prelink targets only)
+        type: boolean
+        required: false
+        default: true
   push:
     branches: [main]
     paths:
@@ -61,7 +78,7 @@ jobs:
       - name: Check out UniXNU
         uses: actions/checkout@v4
         with:
-          repository: UniXNU/UniXNU
+          repository: ${{ inputs.unixnu_repository }}
           ref: ${{ inputs.unixnu_ref || 'main' }}
           path: unixnu
           persist-credentials: false
@@ -87,8 +104,10 @@ jobs:
 
       - name: Select the device
         working-directory: unixnu
+        env:
+          DEFCONFIG: ${{ inputs.defconfig }}
         run: |
-          ./unixnu defconfig sirius_defconfig
+          ./unixnu defconfig "$DEFCONFIG"
           python3 - <<'PY'
           import os, tomllib
           board = tomllib.load(open(os.path.join(os.environ['UNIXNU_DEVICE'], 'board.toml'), 'rb'))
@@ -114,8 +133,11 @@ jobs:
       # scripts/data/storage-bindings.json. By now the prelink has fetched the pinned kernelcache,
       # so the record is proved against it here: a different image or slide fails the run.
       - name: Verify the recorded storage bindings
-        working-directory: unixnu/out/sirius/ipados-17.7.11-21H461/sirius/tree
+        if: inputs.storage_bindings_check
+        env:
+          DEFCONFIG: ${{ inputs.defconfig }}
         run: |
+          cd "unixnu/out/sirius/${{ inputs.os_profile }}/${DEFCONFIG%_defconfig}/tree"
           python3 scripts/derive-storage-bindings.py --check
           python3 - <<'PY'
           import json
@@ -140,11 +162,14 @@ jobs:
 
       - name: Collect artifacts
         if: always()
+        env:
+          DEFCONFIG: ${{ inputs.defconfig }}
         run: |
           mkdir -p artifacts
           # Format 2 output layout: out/<device>/<os_profile>/<config>/
-          work=unixnu/out/sirius/ipados-17.7.11-21H461/sirius
+          work="unixnu/out/sirius/${{ inputs.os_profile }}/${DEFCONFIG%_defconfig}"
           cp "$work"/kernel/kernel.macho artifacts/ 2>/dev/null || true
+          cp "$work"/kernel/*.noctf artifacts/ 2>/dev/null || true
           cp "$work"/kernel/kernel.macho.json artifacts/ 2>/dev/null || true
           cp "$work"/payload/payload.img artifacts/ 2>/dev/null || true
           cp "$work"/payload/payload.json artifacts/ 2>/dev/null || true

@@ -1,0 +1,50 @@
+# Rebased onto the ArmCpu fork of this device (drivers/ArmCpu/ArmCpu.cpp): the ordering
+# fixups are identical to UniXNU patches/drivers/ArmCpu-12377-boot-interrupt.patch, with
+# this board's armcpuCheckpoint() lines in the context. Applied only by the xnu-12377
+# build (scripts/build-platform-12377.py); the xnu-10063 build does not use it.
+--- a/ArmCpu.cpp
++++ b/ArmCpu.cpp
+@@ -466,11 +466,18 @@
+   info.log_id = logicalId;
+   info.cluster_id = static_cast<uint32_t> (ml_get_cluster_number (physical));
+   info.cluster_type = ml_get_boot_cluster_type ();
++  // XNU 12377 calls processor_boot() inside ml_processor_register(). Its
++  // scheduler can unmask IRQ before this call returns, so the per-CPU target
++  // must exist before registration (sleh_irq calls it without a null check).
++  setCPUNumber (info.log_id);
++  if (!skipGic) {
++    ml_install_interrupt_handler (this, static_cast<int> (logicalId), this,
++        reinterpret_cast<IOInterruptHandler> (&ArmCpu::dispatch), nullptr);
++  }
+   perfmon_interrupt_handler_func pmi = nullptr;
+   kern_return_t status = ml_processor_register (&info, &machProcessor, &ipi_handler, &pmi);
+   if (status != KERN_SUCCESS) { panic ("ArmCpu: CPU %u registration failed: %d", logicalId, status); }
+   armcpuCheckpoint (3, "ml_processor_register");
+-  setCPUNumber (info.log_id);
+   armcpu_registered = 1;
+   unsigned smp = 0;
+   PE_parse_boot_argn ("sheng-smp", &smp, sizeof (smp));
+@@ -485,13 +492,22 @@
+     panic ("ArmCpu: CPU interrupt controller allocation failed");
+   }
+   controller->registerCPUInterruptController ();
++  // enableCPUInterrupt publishes the shared wrapper before its vector is
++  // registered. Keep the direct GIC dispatcher installed across that window,
++  // as on secondary cores; do not expose an empty wrapper to a live timer.
++  boolean_t interruptsEnabled = ml_set_interrupts_enabled (FALSE);
+   controller->enableCPUInterrupt (this);
++  if (!skipGic) {
++    ml_install_interrupt_handler (this, static_cast<int> (logicalId), this,
++        reinterpret_cast<IOInterruptHandler> (&ArmCpu::dispatch), nullptr);
++  }
++  ml_set_interrupts_enabled (interruptsEnabled);
+   if (controller->registerInterrupt (provider, logicalId, this, &ArmCpu::dispatch, nullptr) != kIOReturnSuccess) {
+     panic ("ArmCpu: CPU IRQ action registration failed");
+   }
+   gController = controller;
+   armcpuCheckpoint (4, "interrupt controller");
+-  initCPU (true);
++  // processor_boot() already invoked initCPU(true) through cpu_start().
+   armcpuCheckpoint (5, "initCPU");
+   registerService ();
+   armcpuCheckpoint (6, "registerService");

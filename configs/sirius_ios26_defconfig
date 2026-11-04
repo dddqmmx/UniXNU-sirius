@@ -1,0 +1,39 @@
+# Kernel configuration of the sirius iOS 26.5.2 bring-up image: the xnu-12377 (Darwin 25.5.0)
+# kernel built as ordinary ARM64 from patches/xnu-12377.
+#
+# Layer order: arch:configs/common.config (profiles/arch/arm64-ios26), soc:configs/sdm710.config,
+# os:configs/ipados.config, then this file. Only scripts/build-xnu-12377.sh reads these options;
+# the xnu-10063 options of configs/sirius_defconfig (CONFIG_XNU_OWNER_*, CONFIG_XNU_NATIVE_UFS,
+# CONFIG_XNU_CRYPTO_BOOTSTRAP, ...) do not apply here.
+
+# Selects the xnu-12377 build instead of the 4k baseline (scripts/unixnu/kernel.py reads it).
+CONFIG_XNU_BUILD_SCRIPT="build-xnu-12377.sh"
+
+# ArmCpu's GICv3 provider owns the timer: no Raspberry Pi local-controller routing. The 12377
+# script requires this to be on together with CONFIG_XNU_ARMCPU.
+CONFIG_XNU_NATIVE_ARCH_TIMER=y
+# The source crypto provider registers before platform UUID hashing, and pthread through XNU's
+# versioned shims; both are how the 12377 kernel gets a working g_crypto_funcs and pthread_init.
+CONFIG_XNU_SOURCE_CORECRYPTO14=y
+CONFIG_XNU_SOURCE_PTHREAD=y
+# The real device-tree platform expert and the GICv3 boot CPU provider, driven by the ADT that
+# the payload step compiles from dts/sirius.dts.
+CONFIG_XNU_ARM_DT_PLATFORM=y
+CONFIG_XNU_ARMCPU=y
+# Kryo 360 implements PAN and XNU leaves SCTLR_EL1.SPAN clear, so exception entry from EL0 sets
+# PSTATE.PAN; only the PAN build's copyio clears it again (see the iPadOS 17 defconfig).
+CONFIG_XNU_NATIVE_PAN=y
+# The panic region comes from the device tree instead of the Raspberry Pi address.
+CONFIG_XNU_DT_PANIC_REGION=y
+# Off until the 23F84 trust cache is built: there is nothing to load yet.
+CONFIG_XNU_TRUST_CACHE_RUNTIME=n
+
+# Kernel output after ExitBootServices: the polling DWC3 CDC-ACM console of
+# scripts/native-dwc3-console.c (the SoC's USB3 controller is at 0xa600000, the aperture the ADT
+# publishes below). It replaces the iPadOS 17 board console (sirius-usb-console.patch), which is a
+# xnu-10063 patch.
+CONFIG_XNU_NATIVE_DWC3_CONSOLE=y
+# An EL1 port can find the physical timer control register trapped: xnu-12377's fiq_context_init
+# writes CNTP_CTL_EL0 and the write faults on the boot core (the same failure UniXNU-zeta hit on
+# SM8350). Keep the virtual timer and omit that write.
+CONFIG_XNU_VIRTUAL_TIMER_ONLY=y
