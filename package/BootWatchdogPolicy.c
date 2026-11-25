@@ -105,6 +105,9 @@ static const struct {const char *path,*text;} skip_setup_files[]={
   "<key>DMUserDataDisposition</key><dict><key>SyntheticDidUpgrade</key><false/><key>buildVersion</key><string>21H461</string></dict>"
   PLIST_TAIL},
 };
+extern void sirius_apfs_try_resize_data(const char *stage);
+extern volatile int native_staged_apps_stage __attribute__((weak_import));
+
 static void sheng_boot_skip_setup(proc_t p,uint64_t scratch) {
  static const char *const dirs[]={
   "/private/var/containers",
@@ -122,7 +125,31 @@ static void sheng_boot_skip_setup(proc_t p,uint64_t scratch) {
    (void)mkdir(p,&md,&res);
   }
  }
- for(unsigned i=0;i<sizeof(skip_setup_files)/sizeof(skip_setup_files[0]);++i) {
+ // When sheng-staged-apps=1 is active, let com.apple.datamigrator run once (with the filtered 4-plugin list) so SystemAppMigrator
+ // installs /private/var/staged_system_apps into Data and writes LastSystemVersion=21H461 itself.
+ int staged=0;PE_parse_boot_argn("sheng-staged-apps",&staged,sizeof(staged));
+ unsigned count=sizeof(skip_setup_files)/sizeof(skip_setup_files[0]);
+ if(staged==1) {
+  count=4;
+  const char *trig="/private/var/db/.sirius-staged-apps-migrated";
+  int32_t mres=0;
+  if(!copyout(trig,scratch,strlen(trig)+1)) {
+   struct open_args mop={.path=scratch,.flags=O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,.mode=0644};
+   int merr=open(p,&mop,&mres);
+   if(!merr) {
+    struct close_args mcl={.fd=mres};(void)sys_close(p,&mcl,&mres);
+    for(unsigned i=4;i<sizeof(skip_setup_files)/sizeof(skip_setup_files[0]);++i) {
+     int32_t ures=0;
+     if(!copyout(skip_setup_files[i].path,scratch,strlen(skip_setup_files[i].path)+1)) {
+      struct unlink_args rm={.path=scratch};
+      int uerr=unlink(p,&rm,&ures);
+      printf("sirius staged_apps reset migration pref: %s %d\n",skip_setup_files[i].path,uerr);
+     }
+    }
+   }
+  }
+ }
+ for(unsigned i=0;i<count;++i) {
   int error=sheng_boot_write_file(p,scratch,skip_setup_files[i].path,skip_setup_files[i].text,501,501,0600);
   printf("sirius skip setup: %s %d\n",skip_setup_files[i].path,error);
  }
@@ -149,8 +176,6 @@ static int append_job(const char **cursor) {
  }
  *cursor=*e?e+1:e;return 0;
 }
-
-extern void sirius_apfs_try_resize_data(const char *stage);
 
 int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  proc_t p=process;
