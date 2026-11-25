@@ -8,7 +8,16 @@
  *
  * Read-only by construction: the transfer path has no write command and reportWriteProtection()
  * says so.
+ *
+ * SIRIUS_XNU_12377 (scripts/build-board-storage-12377.py) builds this file for the iOS 26 kernel:
+ * BoardStorage (SiriusBoardStorage.cpp) starts it instead of the 10063 bsd_init patch, and the
+ * 10063-only parts are left out - the post-exec and display/GPU/touch probes of that kernel, the
+ * persistent Data window (it would write the iPadOS 17 Data container), the APFS resize at a 21H461
+ * kext address and the owner-mount hooks of the 10063 kern_exec patches.
  */
+#ifndef SIRIUS_XNU_12377
+#define SIRIUS_XNU_12377 0
+#endif
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
@@ -16,7 +25,9 @@
 #include <IOKit/IODeviceTreeSupport.h>
 #include <machine/machine_routines.h>
 #include <pexpert/pexpert.h>
+#include <IOKit/IOBSD.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
+#include <IOKit/storage/IOMedia.h>
 #include <kern/thread.h>
 #include <kern/task.h>
 #include <kern/host.h>
@@ -131,11 +142,16 @@ volatile uint32_t nemmc_blocks;
 volatile uint64_t nemmc_inflight_lba;
 volatile uint32_t nemmc_inflight_count;
 volatile uint32_t nemmc_inflight_beat;
+#if !SIRIUS_XNU_12377
 static bool nemmc_panic_dumped;
+#endif
 
+#if !SIRIUS_XNU_12377
 extern "C" char boot_progress_panic_text[2048];
+#endif
 volatile uint32_t nemmc_heartbeats;
 
+#if !SIRIUS_XNU_12377
 /* What a presented frame costs (package/LegacyDisplayProbe.cpp and the GopFramebuffer board fork): copies, their time, a read-only
  * pass over the source and the cache modes of both mappings. The panel shows only some of these and only while it repaints; the
  * console has them on every fourth beat. */
@@ -200,6 +216,7 @@ sirius_user_thread_probe(void)
 }
 
 static unsigned int nemmc_stack_dumps;
+#endif
 
 /* PSTATE.PAN is set on every exception entry while SCTLR_EL1.SPAN is clear, and a set PAN makes
  * every privileged access to a user page fault. The kernel is built with CONFIG_XNU_NATIVE_PAN=y,
@@ -230,6 +247,7 @@ nemmc_report_pan(void)
 	emmc_log_dec("NEMMC pan ", pan);
 }
 
+#if !SIRIUS_XNU_12377
 static void
 nemmc_dump_init_stack(void)
 {
@@ -250,6 +268,7 @@ nemmc_dump_init_stack(void)
 		}
 	}
 }
+#endif
 
 /* The clock this core runs at: nothing in the port sets a CPU frequency, so the cores run at whatever the boot chain left. Count the
  * architectural PMU's cycle counter over 10 ms of the system counter with interrupts off (the thread cannot move cores meanwhile),
@@ -291,8 +310,10 @@ nemmc_log_cpu_clock(void)
 /* The memory XNU got (DarwinBoot's window) and the free runs DarwinBoot saw before it placed it (db-runs on the command line,
  * drivers/DarwinBoot): the real layout that bounds owned_memory_size. */
 extern "C" unsigned long gPhysBase, gPhysSize;
+#if !SIRIUS_XNU_12377
 extern "C" int sirius_cpufreq_report(unsigned domain, uint32_t state[6], uint32_t *vote_mhz) __attribute__((weak_import));
 extern "C" void sirius_cpufreq_retry(void) __attribute__((weak_import));
+#endif
 
 /* Where the time goes once storage is idle: user/system/idle share of all cores since the previous sample (the panel's LOAD
  * row, which shows only while it repaints). */
@@ -325,6 +346,7 @@ nemmc_log_memory(void)
 {
 	char runs[320];
 
+#if !SIRIUS_XNU_12377
 	/* package/sirius_cpufreq.c: per cluster the enable bit, table rows, index before and requested (ff = none), the kHz of row 0
 	 * and of the highest non-boost row, then the MHz the hardware currently votes. */
 	if (&sirius_cpufreq_retry) {
@@ -342,6 +364,7 @@ nemmc_log_memory(void)
 			emmc_log_dec("NEMMC cpufreq vote MHz ", vote);
 		}
 	}
+#endif
 	emmc_log_hex("NEMMC window base ", gPhysBase);
 	emmc_log_hex("NEMMC window size ", gPhysSize);
 	if (PE_parse_boot_arg_str("db-runs", runs, sizeof(runs))) {
@@ -383,10 +406,14 @@ nemmc_log_memory(void)
 	}
 }
 
+static void nemmc_report_media(void);
+static void nemmc_report_media_table(const char *stage, unsigned limit = 8);
+
 static void
 nemmc_heartbeat_thread(void *, wait_result_t)
 {
 	for (;;) {
+#if !SIRIUS_XNU_12377
 		/* The panic screen paints to the framebuffer and the banner then repaints over it, so a
 		 * panic message is gone before anyone can read it. The screen code already copies the
 		 * formatted message (with its return addresses) into this buffer, so mirror it into the
@@ -400,9 +427,20 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 			}
 			emmc_log("\nNEMMC PANIC TEXT END\n");
 		}
+#endif
 		emmc_log_hex("NEMMC alive beats/reads ",
 		    (((uint64_t)nemmc_heartbeats) << 32) | nemmc_reads);
 		emmc_log_hex("NEMMC alive blocks ", nemmc_blocks);
+#if SIRIUS_XNU_12377
+		/* What IOStorageFamily built on the card: the whole disk, then one slice per GPT entry
+		 * once IOBSD exists. A count early on, the whole table once, a count again later. */
+		if (nemmc_heartbeats == 1 || nemmc_heartbeats == 10) {
+			nemmc_report_media();
+		} else if (nemmc_heartbeats == 5) {
+			nemmc_report_media_table("NEMMC media table\n", 96);
+		}
+#endif
+#if !SIRIUS_XNU_12377
 		emmc_log_dec("NEMMC probe user thread starts ", sirius_user_thread_starts);
 		emmc_log_dec("NEMMC probe user faults ", sirius_user_faults);
 		emmc_log_dec("NEMMC probe init syscalls ", sirius_init_syscalls);
@@ -482,11 +520,13 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 					}
 			}
 		}
+#endif
 		if ((nemmc_heartbeats % 16) == 0) {
 			nemmc_log_cpu_clock();
 			nemmc_log_memory();
 			nemmc_log_load();
 		}
+#if !SIRIUS_XNU_12377
 		{
 			static int reported;
 
@@ -524,13 +564,16 @@ nemmc_heartbeat_thread(void *, wait_result_t)
 		    nemmc_heartbeats >= 20 + (uint32_t)nemmc_stack_dumps * 5) {
 			nemmc_dump_init_stack();
 		}
+#endif
 		uint64_t inflight = nemmc_inflight_lba;
 		if (inflight != 0 && nemmc_heartbeats - nemmc_inflight_beat > 1) {
 			emmc_log_hex("NEMMC inflight lba ", inflight);
 			emmc_log_dec("NEMMC inflight count ", nemmc_inflight_count);
 			emmc_log_dec("NEMMC inflight beats ", nemmc_heartbeats - nemmc_inflight_beat);
 		}
+#if !SIRIUS_XNU_12377
 		boot_log_tick(nemmc_heartbeats * 2);
+#endif
 		nemmc_heartbeats++;
 		IOSleep(2000);
 	}
@@ -561,7 +604,7 @@ nemmc_report_media(void)
  * that create them log through IOLog, which does not reach the ring, so this is the only way to
  * see whether APFS published the OS volume of the image set. */
 static void
-nemmc_report_media_table(const char *stage)
+nemmc_report_media_table(const char *stage, unsigned limit)
 {
 	emmc_log(stage);
 	OSDictionary *matching = IOService::serviceMatching("IOMedia");
@@ -570,7 +613,7 @@ nemmc_report_media_table(const char *stage)
 	}
 	OSIterator *iterator = IOService::getMatchingServices(matching);
 	unsigned index = 0;
-	while (iterator != nullptr && index < 8) {
+	while (iterator != nullptr && index < limit) {
 		IOService *media = OSDynamicCast(IOService, iterator->getNextObject());
 		if (media == nullptr) {
 			break;
@@ -586,6 +629,13 @@ nemmc_report_media_table(const char *stage)
 		emmc_log(" bsd=");
 		text = bsd ? bsd->getCStringNoCopy() : "-";
 		for (unsigned i = 0; text[i] != '\0' && i < 12; i++) {
+			sirius_usb_log_char(text[i]);
+		}
+		/* The GPT partition name the scheme gives each slice (getName), so the table can be read
+		 * against the probe's EMMC part rows. */
+		emmc_log(" name=");
+		text = media->getName();
+		for (unsigned i = 0; text != nullptr && text[i] != '\0' && i < 36; i++) {
 			sirius_usb_log_char(text[i]);
 		}
 		sirius_usb_log_char('\n');
@@ -1023,6 +1073,18 @@ public:
 	unsigned windowCount() const { return fWindows; }
 	bool windowIs(unsigned index, const char *name) const;
 	void publishWindow(unsigned index);
+	bool hasReadOnlyWindow(const NativeEmmcBlock *block) const
+	{
+		if (block == nullptr || block->isData()) {
+			return false;
+		}
+		for (unsigned i = 0; i < fWindows; i++) {
+			if (fWindow[i] == block) {
+				return true;
+			}
+		}
+		return false;
+	}
 };
 
 OSDefineMetaClassAndStructors(NativeEmmc, IOService);
@@ -1127,6 +1189,7 @@ NativeEmmc::prepareWindows(UInt64 blocks)
 	return (int)fWindows;
 }
 
+#if !SIRIUS_XNU_12377
 #define SIRIUS_DATA_TARGET_BLOCKS 2097152ull   /* 8 GiB in 4 KiB APFS blocks */
 static IOService *nemmc_apfs_container;
 static UInt64 nemmc_data_first_lba;
@@ -1260,6 +1323,17 @@ NativeEmmc::prepareDataWindow(UInt64 blocks)
 	emmc_log_dec("NEMMC data window blocks ", windowBlocks);
 	return true;
 }
+#else
+/* The persistent Data window writes into userdata behind the root image, where this phone keeps
+ * the iPadOS 17 Data container: the iOS 26 kernel publishes no write window at all. */
+bool
+NativeEmmc::prepareDataWindow(UInt64 blocks)
+{
+	(void)blocks;
+	emmc_log("NEMMC data window: not built for xnu-12377 (read-only eMMC)\n");
+	return false;
+}
+#endif
 
 /* The Data volume's seed, when the payload carries one (unixnu build payload --data-ramdisk):
  * DarwinBoot copies it into the kernel's window and names it in /chosen/memory-map/RAMDisk
@@ -1454,11 +1528,8 @@ NativeEmmc::stop(IOService *provider)
 	IOService::stop(provider);
 }
 
-/* The owner SystemOS mount in kern_exec.c (offline-owner-systemos-mount.patch, built here with
- * XNU_BRINGUP_OWNER_CACHE) mounts the SystemOS cryptex as a union over / before launchd starts, so
- * dyld finds its shared cache. It asks the block driver to authorize the root and to name the device
- * of the SystemOS volume. The eMMC windows have no owner policy, so both answers are only given with
- * the explicit boot argument sirius-allow-unverified=1, as the uke port does for its UFS root. */
+/* Both the 10063 owner-mount path and the 12377 bsd_init root-auth bridge require the explicit
+ * boot argument sirius-allow-unverified=1 before accepting a read-only SHNGROOT window. */
 static int
 nemmc_allow_unverified(void)
 {
@@ -1471,6 +1542,100 @@ nemmc_allow_unverified(void)
 	return answer;
 }
 
+#if SIRIUS_XNU_12377
+extern "C" {
+volatile int native_ufs_owner_root_accepted = 0;
+volatile uint32_t native_ufs_owner_root_matches = 0;
+volatile uint32_t native_ufs_owner_root_depth = 0;
+char native_ufs_owner_root_uuid[37] = {};
+uint8_t native_ufs_owner_root_manifest[48] = {};
+}
+
+/* xnu-12377 bsd_init root-authentication bridge (native-ufs-owner-root.patch): when Apple's
+ * FSIOC_KERNEL_ROOTAUTH returns an error on a non-Apple board, accept the mounted root only if
+ * sirius-allow-unverified=1 is set, the mount is read-only, its dev_t equals the selected rootdev,
+ * exactly one read-only IOMedia matches that dev_t with a 36-char UUID, and its IOKit provider
+ * chain sits on a read-only SHNGROOT window published by NativeEmmc. */
+extern "C" int
+native_ufs_owner_root_authorized(dev_t mounted, dev_t selected, int readonly)
+{
+	native_ufs_owner_root_accepted = 0;
+	native_ufs_owner_root_matches = 0;
+	native_ufs_owner_root_depth = 0;
+	bzero(native_ufs_owner_root_uuid, sizeof(native_ufs_owner_root_uuid));
+	bzero(native_ufs_owner_root_manifest, sizeof(native_ufs_owner_root_manifest));
+	if (!readonly || mounted == NODEV || mounted != selected) {
+		emmc_log("NEMMC owner root refused: mount flags or dev_t mismatch\n");
+		return 0;
+	}
+	if (!nemmc_allow_unverified()) {
+		emmc_log("NEMMC owner root refused: pass sirius-allow-unverified=1\n");
+		return 0;
+	}
+	OSDictionary *matching = IOService::serviceMatching("IOMedia");
+	OSDictionary *properties = OSDictionary::withCapacity(2);
+	OSNumber *mjr = OSNumber::withNumber(static_cast<unsigned>(major(mounted)), 32);
+	OSNumber *mnr = OSNumber::withNumber(static_cast<unsigned>(minor(mounted)), 32);
+	if (!matching || !properties || !mjr || !mnr) {
+		OSSafeReleaseNULL(mnr);
+		OSSafeReleaseNULL(mjr);
+		OSSafeReleaseNULL(properties);
+		OSSafeReleaseNULL(matching);
+		return 0;
+	}
+	bool ready = properties->setObject(kIOBSDMajorKey, mjr) &&
+	    properties->setObject(kIOBSDMinorKey, mnr) &&
+	    matching->setObject("IOPropertyMatch", properties);
+	mnr->release();
+	mjr->release();
+	properties->release();
+	OSIterator *iterator = ready ? IOService::getMatchingServices(matching) : nullptr;
+	matching->release();
+	if (!iterator) {
+		return 0;
+	}
+	bool authorized = false;
+	unsigned matches = 0, depth = 0;
+	char uuid[37] = {};
+	while (OSObject *object = iterator->getNextObject()) {
+		if (++matches != 1) {
+			authorized = false;
+			break;
+		}
+		IOMedia *media = OSDynamicCast(IOMedia, object);
+		if (!media || media->isWritable()) {
+			continue;
+		}
+		OSString *identity = OSDynamicCast(OSString, media->getProperty("UUID"));
+		if (!identity || identity->getLength() != 36) {
+			continue;
+		}
+		strlcpy(uuid, identity->getCStringNoCopy(), sizeof(uuid));
+		for (IOService *provider = media; provider != nullptr && depth < 64; provider = provider->getProvider()) {
+			++depth;
+			NativeEmmcBlock *block = OSDynamicCast(NativeEmmcBlock, provider);
+			if (block != nullptr) {
+				NativeEmmc *emmc = OSDynamicCast(NativeEmmc, block->getProvider());
+				authorized = emmc != nullptr && emmc->hasReadOnlyWindow(block);
+				break;
+			}
+		}
+	}
+	iterator->release();
+	native_ufs_owner_root_matches = matches;
+	native_ufs_owner_root_depth = depth;
+	if (!authorized || matches != 1) {
+		emmc_log("NEMMC owner root refused: media does not sit on a read-only SHNGROOT window\n");
+		return 0;
+	}
+	strlcpy(native_ufs_owner_root_uuid, uuid, sizeof(native_ufs_owner_root_uuid));
+	native_ufs_owner_root_accepted = 1;
+	emmc_log("NEMMC owner root authorized uuid=");
+	emmc_log(native_ufs_owner_root_uuid);
+	emmc_log("\n");
+	return 1;
+}
+#else
 extern "C" int
 native_verified_block_root_authorized(dev_t device)
 {
@@ -1704,13 +1869,15 @@ native_ram_block_gpu_addon(const uint8_t **data, uint64_t *bytes)
 	}
 	return 0;
 }
+#endif
 
 /* Entry point of bsd_init (patches/xnu/sirius-usb-console.patch). No personality is installed:
  * the board owns the controller, so the probe creates and starts the driver once, the way the
  * PMGR nub of this port is started. It runs after the console starts, so the numbered steps are
- * in the console ring even if the driver does not return. */
-extern "C" void
-sirius_native_emmc_probe(void)
+ * in the console ring even if the driver does not return. On xnu-12377 BoardStorage::start
+ * (SiriusBoardStorage.cpp) calls it once IOKit matches the platform expert device. */
+static void
+nemmc_probe(IOService *parent)
 {
 	static NativeEmmc *device = nullptr;
 
@@ -1756,16 +1923,15 @@ sirius_native_emmc_probe(void)
 		return;
 	}
 	emmc_log("NativeEmmc: step 2 init done\n");
-	IOService *platform = IOService::getPlatform();
-	emmc_log_hex("NEMMC step 3 platform ", (uint64_t)(uintptr_t)platform);
-	if (platform != nullptr && !candidate->attach(platform)) {
-		emmc_log("NativeEmmc: attach to the platform failed\n");
+	emmc_log_hex("NEMMC step 3 parent ", (uint64_t)(uintptr_t)parent);
+	if (parent != nullptr && !candidate->attach(parent)) {
+		emmc_log("NativeEmmc: attach to the parent failed\n");
 		candidate->release();
 		return;
 	}
-	if (!candidate->start(platform)) {
+	if (!candidate->start(parent)) {
 		emmc_log("NativeEmmc: the driver did not start\n");
-		candidate->detach(platform);
+		candidate->detach(parent);
 		candidate->release();
 		return;
 	}
@@ -1779,3 +1945,19 @@ sirius_native_emmc_probe(void)
 		emmc_log("NEMMC heartbeat failed\n");
 	}
 }
+
+extern "C" void
+sirius_native_emmc_probe(void)
+{
+	nemmc_probe(IOService::getPlatform());
+}
+
+#if SIRIUS_XNU_12377
+/* BoardStorage (SiriusBoardStorage.cpp) is matched on the platform expert device next to the
+ * platform expert, which may not have published itself yet: the driver hangs off BoardStorage. */
+void
+sirius_native_emmc_start(IOService *parent)
+{
+	nemmc_probe(parent);
+}
+#endif

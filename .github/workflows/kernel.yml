@@ -33,16 +33,16 @@ on:
       defconfig:
         description: Device defconfig to build (configs/NAME)
         required: false
-        default: "sirius_defconfig"
+        default: "sirius_ios26_defconfig"
       os_profile:
         description: OS profile; it names the output directory out/<device>/<profile>/<config>
         required: false
-        default: "ipados-17.7.11-21H461"
+        default: "ios-26.5.2-23F84-arm64"
       storage_bindings_check:
         description: Check the recorded IOStorageFamily bindings against the prelinked kernel (prelink targets only)
         type: boolean
         required: false
-        default: true
+        default: false
   push:
     branches: [main]
     paths:

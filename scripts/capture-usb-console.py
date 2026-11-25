@@ -332,6 +332,9 @@ def main():
                              'heartbeat adds one every two seconds while the kernel runs, so silence means it stopped')
     args = parser.parse_args()
     started = time.time()
+    for path in (args.output, args.timeline, args.summary):
+        if path:
+            os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     timeline = open(args.timeline, 'a', encoding='utf-8') if args.timeline else None
     seen_lines = set()
     ordered_lines = []

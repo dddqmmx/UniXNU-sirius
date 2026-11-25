@@ -1,0 +1,748 @@
+XNUUSB: native DWC3 console ready
+kprintf initialized
+
+Serial mode specified: 00000003
+initialize_screen: b=9C000000, w=00000438, h=000008C0, r=000010E0, d=00000000
+pe_arm_init_interrupts: args: 0xfffffff007bdef60
+pe_arm_map_interrupt_controller: soc_phys:  0x17000000
+pe_arm_map_interrupt_controller: failed to find the interrupt-controller.
+pe_arm_init_debug: failed to find cpu-debug-interface
+Darwin Kernel Version 25.5.0: Sat Nov  7 06:39:02 CST 2026; root:ios-obj/DEVELOPMENT_ARM64_BCM2837
+Kernel boot args: -v serial=3 debug=0x14e -enable_kprintf_spam cpus=8 sheng-smp=1 armcpu-timer-intid=19 armcpu-self-ipi=1 sirius_emmc_hs=3 db-runs=80000000+5700000,97C00000+4400000,9F800000+12FA6B000
+pmap_startup() init/release time: 51928 microsec
+vm_page_bootstrap: 171878 free pages, 2202 wired pages
+VM bootstrap: 60 maps, 256 entries and 64 nodes available
+Enable all vm_debug options with boot-arg vm_debug=1
+Maximum number of VM swap files: 5
+ipc_kernel_copy_map     : 0xfffffff0e8164000 - 0xfffffff0e8964000 (8M)
+zones                   : 0xfffffff0e8964000 - 0xfffffff6e8964000 (24G)
+compressor              : 0xfffffff6e8964000 - 0xfffffff7ba9a4000 (3360M)
+gIOKitPageableFixed     : 0xfffffff7ba9a4000 - 0xfffffff81a9a4000 (1536M)
+bsd_pageable            : 0xfffffff81a9a4000 - 0xfffffff81b2ec000 (9M)
+ipc_kernel_map          : 0xfffffff81b2ec000 - 0xfffffff81d2ec000 (32M)
+zone_meta               : 0xfffffff81d2ec000 - 0xfffffff81f2f4000 (32M)
+kmem_io                 : 0xfffffff81f2f4000 - 0xfffffff85f2f4000 (1024M)
+bufferhdr               : 0xfffffff85f2f4000 - 0xfffffff85f4f8000 (2064K)
+kmem_ptr_range_0        : 0xfffffff85f4f8000 - 0xfffffff9937a4000 (4930M)
+mb                      : 0xfffffff9937a4000 - 0xfffffff9977a4000 (64M)
+kmem_data_private_range : 0xfffffff9977a4000 - 0xfffffffacba50000 (4930M)
+kmem_data_shared_range  : 0xfffffffacba50000 - 0xfffffffbffcfc000 (4930M)
+vm: "vm_compressor_mode" is 32
+zone_init: map VM    0xfffffff0e8964000:0xfffffff1cefc8000 (3686M, 3686M usable)
+zone_init: map RO    0xfffffff1cefc8000:0xfffffff21bc9c000 (1228M, 1228M usable)
+zone_init: map GEN0  0xfffffff21bc9c000:0xfffffff302300000 (3686M, 3686M usable)
+zone_init: map GEN1  0xfffffff302300000:0xfffffff3e8964000 (3686M, 3686M usable)
+zone_init: map GEN2  0xfffffff3e8964000:0xfffffff4cefcc000 (3686M, 3686M usable)
+zone_init: map GEN3  0xfffffff4cefcc000:0xfffffff5b5634000 (3686M, 3686M usable)
+zone_init: map DATA  0xfffffff5b5634000:0xfffffff6e8964000 (4915M, 4915M usable)
+zone_init: metadata  0xfffffff81d2fc000:0xfffffff81eafc000 (24M)
+zone_init: metabits  0xfffffff81eafc000:0xfffffff81f2e4000 (7M)
+zone_init: extra     0:0 (0B)
+Unable to find vm tag  for btlog
+VM bootstrap done: 58 maps, 232 entries and 60 nodes left
+IOKit IOMD setownership ENABLED
+ATM subsystem is initialized
+standard timeslicing quantum is 10000 us
+standard background quantum is 2500 us
+Scheduler: Default of clutch
+Setting scheduler priority decay band limit 18
+[processor_init] processor 1 belongs to processor set 0 of type 0
+[processor_init] processor 2 belongs to processor set 0 of type 0
+[processor_init] processor 3 belongs to processor set 0 of type 0
+[processor_init] processor 4 belongs to processor set 0 of type 0
+[processor_init] processor 5 belongs to processor set 0 of type 0
+[processor_init] processor 6 belongs to processor set 0 of type 0
+[processor_init] processor 7 belongs to processor set 0 of type 0
+Long logs support configured: size: 16384
+Log queues configured: slot count: 72, per-slot size: 32768, total size: 2359296
+OSLog stream configured: stream: 8192 bytes, cache: 2112 bytes
+OSLog stream verification: 0
+Firehose configured: 16 chunks, 8 io pages
+[trap_telemetry] trap_telemetry_init
+BANK subsystem is initialized
+mig_table_max_displ = 90 mach_kobj_count = 381
+debug_log_init: Error!! gPanicBase is still not initialized
+suspend_cluster_powerdown_locked>calling sched_update_powered_cores to suspend powerdown
+debug_log_init: Error!! gPanicBase is still not initialized
+kdp_core zlib memory 0x8000
+Registered coredump handler for kernel
+Serial requested, consistent debug disabled or debug boot arg not present, configuring debugging over serial
+Initializing serial KDP
+iBoot version: 
+iBoot Stage 2 version: 
+corecrypto_kext_start (tracing disabled)
+FIPSPOST_KEXT [230202973] fipspost_post:141: [FIPSPOST][Module-ID] Apple corecrypto Module v14.0 [Apple ARM, Kernel, Software, SL1]
+FIPSPOST_KEXT [230212715] fipspost_post:149: PASSED: (0 ms) - fipspost_post_hmac
+FIPSPOST_KEXT [233493458] fipspost_post:153: PASSED: (170 ms) - fipspost_post_integrity
+FIPSPOST_KEXT [233501797] fipspost_post:157: PASSED: (0 ms) - fipspost_post_indicator
+FIPSPOST_KEXT [233508576] fipspost_post:158: PASSED: (0 ms) - fipspost_post_aes_ecb
+FIPSPOST_KEXT [233515091] fipspost_post:159: PASSED: (0 ms) - fipspost_post_aes_cbc
+FIPSPOST_KEXT [233871747] fipspost_post:160: PASSED: (18 ms) - fipspost_post_rsa_sig
+FIPSPOST_KEXT [234661919] fipspost_post:161: PASSED: (40 ms) - fipspost_post_ecdsa
+FIPSPOST_KEXT [234710592] fipspost_post:162: PASSED: (2 ms) - fipspost_post_ecdh
+FIPSPOST_KEXT [234716463] fipspost_post:163: PASSED: (0 ms) - fipspost_post_aes_ccm
+FIPSPOST_KEXT [234722194] fipspost_post:164: PASSED: (0 ms) - fipspost_post_aes_cmac
+FIPSPOST_KEXT [234728622] fipspost_post:165: PASSED: (0 ms) - fipspost_post_hkdf
+FIPSPOST_KEXT [235431266] fipspost_post:166: PASSED: (36 ms) - fipspost_post_pbkdf
+FIPSPOST_KEXT [235440779] fipspost_post:167: PASSED: (0 ms) - fipspost_post_drbg_hmac
+FIPSPOST_KEXT [235446908] fipspost_post:169: PASSED: (0 ms) - fipspost_post_kdf_ctr
+FIPSPOST_KEXT [235452458] fipspost_post:170: PASSED: (0 ms) - fipspost_post_kdf_ctr_cmac
+FIPSPOST_KEXT [235458218] fipspost_post:171: PASSED: (0 ms) - fipspost_post_aes_gcm
+FIPSPOST_KEXT [235463811] fipspost_post:172: PASSED: (0 ms) - fipspost_post_aes_xts
+FIPSPOST_KEXT [235470451] fipspost_post:173: PASSED: (0 ms) - fipspost_post_tdes_ecb
+FIPSPOST_KEXT [235476484] fipspost_post:174: PASSED: (0 ms) - fipspost_post_drbg_ctr
+FIPSPOST_KEXT [235481893] fipspost_post:186: all tests PASSED (274 ms)
+corecrypto_kext_start completed successfully
+IONVRAM.cpp:start:1447 - ...
+IONVRAM.cpp:initImageFormat:1586 - NVRAM size is 8192 bytes
+IONVRAM.cpp:getNVRAMProperties:1340 - _bankSize=0x2000, _bankCount=0x1, _currentBank=0
+IONVRAMCHRPHandler.cpp:unserializeImage:487 - NVRAM : commonPartitionOffset - 0x30, commonPartitionSize - 0x800, systemPartitionOffset - 0xffffffff, systemPartitionSize - 0
+IONVRAMCHRPHandler.cpp:unserializeVariables:584 - _commonSize 0x800, _systemSize 0
+IONVRAM.cpp:handleEphDM:1373 - ephemeral-data-mode not supported
+ulock_initialize>thread_max=1536, ull_hash_buckets=512
+vm: creating swapout thread
+vm: creating swapfile creation thread
+vm: creating swapfile GC thread
+lockdown_mode: lockdown mode in nvram is off
+calling mpo_policy_init for vnguard
+Security policy loaded: Guarded vnode policy (vnguard)
+No POST boot-arg set.
+BoardStorage: sirius SDCC1 eMMC probe
+EMMC rcg cfg=00000401 m=00000000 n=00000000 d=000000ff vspec=00000a9c corever=1000006c dll=6000642c dllst=00000000
+EMMC probe step=2 ver=6c02 caps=762dc8b2 state=01f800f0 clock=0407 power=0d halts=0
+EMMC smmu140=00000000 scr0=00210406 gfsr=00000000
+EMMC power 0d->0b hc2 02->0a
+EMMC set400k=ok cfg=00002017 m=00000001 n=000000fc d=000000fb
+EMMC rca=1 st=00000900 cur=4
+EMMC cmd7=fail r1=00000000
+EMMC power-in=0b hc2=0a
+EMMC power-out=0b hc2=0a
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8cc7 trans=12
+EMMC read=okEMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC clock25=ok
+ sig=EFI PART
+EMMC pio-distinct=1
+EMMC after=ok st=00000900 cur=4
+EMMC gpt lba=2 count=84 size=128
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=a000 trans=2
+EMMC part first=40 last=55 name=switch
+EMMC part first=56 last=71 name=bk1
+EMMC part first=72 last=87 name=dpo
+EMMC part first=88 last=127 name=bk2
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=128 last=191 name=sec
+EMMC part first=192 last=255 name=ssd
+EMMC part first=256 last=319 name=limits
+EMMC part first=320 last=383 name=bk3
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=384 last=511 name=bk4
+EMMC part first=512 last=767 name=vbmeta
+EMMC part first=768 last=1023 name=qupfw
+EMMC part first=1024 last=1535 name=apdp
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8800 trans=2
+EMMC part first=1536 last=2047 name=msadp
+EMMC part first=2048 last=2559 name=fsc
+EMMC part first=2560 last=3071 name=xbl_config
+EMMC part first=3072 last=3583 name=storsec
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=3584 last=4095 name=storsecbak
+EMMC part first=4096 last=5119 name=aop
+EMMC part first=5120 last=6143 name=bk5
+EMMC part first=6144 last=8191 name=ddr
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=8192 last=10239 name=keystore
+EMMC part first=10240 last=12287 name=frp
+EMMC part first=12288 last=14335 name=bk6
+EMMC part first=14336 last=16383 name=bk7
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=16384 last=18431 name=hyp
+EMMC part first=18432 last=20479 name=hypbak
+EMMC part first=20480 last=22527 name=cmnlib
+EMMC part first=22528 last=24575 name=cmnlibbak
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=24576 last=26623 name=cmnlib64
+EMMC part first=26624 last=28671 name=cmnlib64bak
+EMMC part first=28672 last=30719 name=keymaster
+EMMC part first=30720 last=32767 name=keymasterbak
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=32768 last=34815 name=bk8
+EMMC part first=34816 last=36863 name=bk9
+EMMC part first=36864 last=38911 name=dip
+EMMC part first=38912 last=40959 name=bluetooth
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=40960 last=45055 name=devcfg
+EMMC part first=45056 last=49151 name=devcfgbak
+EMMC part first=49152 last=53247 name=abl
+EMMC part first=53248 last=57343 name=ablbak
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=57344 last=61439 name=toolsfv
+EMMC part first=61440 last=65535 name=sti
+EMMC part first=65536 last=69631 name=ImageFv
+EMMC part first=69632 last=73727 name=bk10
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=73728 last=81919 name=misc
+EMMC part first=81920 last=90111 name=mdtpsecapp
+EMMC part first=90112 last=98303 name=mdtpsecappbak
+EMMC part first=98304 last=114687 name=dtbo
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=114688 last=131071 name=bk11
+EMMC part first=131072 last=147455 name=xbl
+EMMC part first=147456 last=163839 name=xblbak
+EMMC part first=163840 last=180223 name=tz
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=180224 last=196607 name=tzbak
+EMMC part first=196608 last=212991 name=logfs
+EMMC part first=212992 last=229375 name=spunvm
+EMMC part first=229376 last=262143 name=bk12
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=262144 last=278527 name=fsg
+EMMC part first=278528 last=393215 name=bk13
+EMMC part first=393216 last=409599 name=modemst1
+EMMC part first=409600 last=425983 name=modemst2
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=425984 last=524287 name=bk14
+EMMC part first=524288 last=557055 name=devinfo
+EMMC part first=557056 last=589823 name=oops
+EMMC part first=589824 last=655359 name=mdtp
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8000 trans=0
+EMMC part first=655360 last=720895 name=dsp
+EMMC part first=720896 last=786431 name=logo
+EMMC part first=786432 last=917503 name=splash
+EMMC part first=917504 last=1048575 name=persist
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=1048576 last=1179647 name=persistbak
+EMMC part first=1179648 last=1310719 name=boot
+EMMC part first=1310720 last=1441791 name=recovery
+EMMC part first=1441792 last=1572863 name=backos
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=1572864 last=1703935 name=minidump
+EMMC part first=1703936 last=1835007 name=logdump
+EMMC part first=1835008 last=2097151 name=rawdump
+EMMC part first=2097152 last=2490367 name=modem
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=2490368 last=3014655 name=cache
+EMMC part first=3014656 last=4718591 name=cust
+EMMC part first=4718592 last=11010047 name=system
+EMMC part first=11010048 last=17301503 name=vendor
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8001 trans=2
+EMMC part first=17301504 last=122142686 name=userdata
+EMMC userdata guid=647aa5c6de8392d0f60f191cd0036be0
+EMMC timeout-in=0e
+EMMC timeout-set=0e
+EMMC clock=0007
+EMMC clk-during=0007 gcc=00004221
+EMMC dat seen=8cc7 trans=12
+EMMC ext_csd rev=8 width=2 timing=1 type=57 cache=0 hc=34 hc2=0a
+EMMC multi=ok eis=0000 baseline=0000
+EMMC rate 25000 kHz ok
+EMMC rate 50000 kHz ok
+EMMC fast rate=50000 kHz multi=on run=256
+EMMC window head=53484e47524f4f540100000002000000 magic=....
+ArmCpu: start physical=0 logical=0 secondary=0
+ArmCpu: start physical=100 logical=1 secondary=1
+ArmCpu: start physical=200 logical=2 secondary=1
+ArmCpu: start physical=300 logical=3 secondary=1
+ArmCpu: start physical=400 logical=4 secondary=1
+ArmCpu: start physical=500 logical=5 secondary=1
+ArmCpu: start physical=600 logical=6 secondary=1
+ArmCpu: start physical=700 logical=7 secondary=1
+IOServicePH::kIOMessageSystemCapabilityChange: will 0xf->0xf
+IOServicePH::systemPowerChange to 0x30
+IOServicePH::kIOMessageSystemCapabilityChange: did 0xf->0xf
+NativeEmmc: step 0 enter
+NEMMC step 1 instance fffffff302216400
+NativeEmmc: step 2 init done
+NEMMC step 3 parent fffffff5b5511ee0
+NativeEmmc: step 4 base start
+NEMMC pan implemented 1
+NEMMC pan 4194304
+NativeEmmc: step 5 prepare
+NativeEmmc: step 6 allocate the block device
+NEMMC step 7 block fffffff3e88ef940
+NativeEmmc: step 7b block base init
+NativeEmmc: step 7c block base init done
+NativeEmmc: step 8 attach the block device
+NativeEmmc: step 9 start the block device
+NativeEmmc: step 9a block base start
+NativeEmmc: step 9b block register
+NativeEmmc: step 9c block registered
+NEMMC published blocks:
+NEMMC blocks 000000000747bfdf
+NEMMC windows: disabled (sirius_emmc_win=1 to publish)
+NEMMC data seed: none in the payload
+NativeEmmc: step 10 register the driver
+NativeEmmc: step 11 done
+NEMMC publisher started
+NEMMC IOMedia count 0000000000000000
+NEMMC heartbeat started
+BoardStorage: sirius eMMC start returned
+NEMMC publisher done 0
+NEMMC media table after publishNEMMC media count 0
+NEMMC alive beats/reads 0000000000000000
+NEMMC alive blocks 0000000000000000
+NEMMC cpu mpidr 0000000000000000
+NEMMC cpu MHz 1516
+NEMMC window base 000000009f804000
+NEMMC window size 00000000aa000000
+NEMMC db-runs 80000000+5700000,97C00000+4400000,9F800000+12FA6B000
+NEMMC efi-map 80000000+5700000 type 7 x1
+NEMMC efi-map 85700000+600000 type 0 x1
+NEMMC efi-map 85d00000+100000 type 7 x1
+NEMMC efi-map 85e00000+3100000 type 0 x1
+NEMMC efi-map 88f00000+1c00000 type 7 x1
+NEMMC efi-map 8ab00000+cb17000 type 0 x1
+NEMMC efi-map 97617000+4e9000 type 7 x1
+NEMMC efi-map 97b00000+100000 type 0 x1
+NEMMC efi-map 97c00000+4400000 type 7 x1
+NEMMC efi-map 9c000000+2300000 type 0 x1
+NEMMC efi-map 9e300000+100000 type 7 x1
+NEMMC efi-map 9e400000+1400000 type 0 x1
+NEMMC efi-map 9f800000+4000 type 7 x1
+NEMMC efi-map 9f804000+aa000000 type 1 x1
+NEMMC efi-map 149804000+86ffc000 type 7 x1
+NEMMC efi-map 1d0801000+105000 type 7 x1
+NEMMC efi-map 1d0906000+c000 type 4 x1
+NEMMC efi-map 1d0912000+26000 type 7 x1
+NEMMC efi-map 1d0938000+d000 type 3 x1
+NEMMC efi-map 1d0946000+6000 type 7 x1
+NEMMC efi-map 1d094c000+2000 type 4 x1
+NEMMC efi-map 1d094e000+1c000 type 1 x1
+NEMMC efi-map 1d096a000+8000 type 4 x1
+NEMMC efi-map 1d0972000+10000 type 9 x1
+NEMMC efi-map 1d0982000+5000 type 4 x1
+NEMMC efi-map 1d0988000+3000 type 4 x1
+NEMMC efi-map 1d098b000+22000 type 6 x1
+NEMMC efi-map 1d09ad000+1baa7000 type 4 x1
+NEMMC efi-map 1ec454000+105d000 type 3 x1
+NEMMC efi-map 1ed4b2000+ffce000 type 3 x1
+NEMMC efi-map 1fd480000+10000 type 5 x1
+NEMMC efi-map 1fd490000+230000 type 3 x1
+NEMMC load user % 0
+NEMMC load sys % 6
+NEMMC load idle % 93
+NEMMC read block 0000000000000000
+NEMMC read count 0000000000000001
+NEMMC read block 0000000000000001
+NEMMC read count 0000000000000001
+NEMMC read block 0000000000000002
+NEMMC read count 0000000000000015
+cpu_start() cpu: 0
+Copyright (c) 1982, 1986, 1989, 1991, 1993
+	The Regents of the University of California. All rights reserved.
+
+MAC Framework successfully initialized
+using 3451 buffer headers and 3451 cluster IO buffer headers
+ktriage_register_subsystem_strings: set subsystem 8 strings
+mbinit: done [64 MB total pool size, (42/21) split]
+New aio workqueue implementation selected
+SK: netagent is enabled by default for this platform
+DLIL: running SUM16 self-tests ... PASSED
+dlil_init: Waiting for all the create dlil kernel threads to get scheduled at least once.
+dlil_init: All the created dlil kernel threads have been scheduled at least once. Proceeding.
+Skywalk: running self-tests
+Skywalk: sk_copy64_8 ... PASSED
+Skywalk: sk_copy32_8 ... PASSED
+Skywalk: sk_copy64_16 ... PASSED
+Skywalk: sk_copy32_16 ... PASSED
+Skywalk: sk_copy64_20 ... PASSED
+Skywalk: sk_copy64_24 ... PASSED
+Skywalk: sk_copy64_32 ... PASSED
+Skywalk: sk_copy32_32 ... PASSED
+Skywalk: sk_copy64_40 ... PASSED
+Skywalk: sk_copy64_64x ... PASSED
+Skywalk: sk_copy64_32x ... PASSED
+Skywalk: sk_copy64_8x ... PASSED
+Skywalk: sk_copy64_4x ... PASSED
+Skywalk: sk_zero_16 ... PASSED
+Skywalk: sk_zero_32 ... PASSED
+Skywalk: sk_zero_48 ... PASSED
+Skywalk: sk_zero_128 ... PASSED
+Skywalk: memcmp mask ... PASSED
+rootvnode is not set
+Failed to open swap file 2
+bsd_autoconf: calling kminit
+ifnet_attach: All kernel threads created for interface lo0 have been scheduled at least once. Proceeding.
+skip attaching fsw to lo0 using legacy TX model
+IOCPUInterruptController: not registry member at registerService()
+cpu_start() cpu: 1
+cpu_start() cpu: 2
+cpu_start() cpu: 3
+cpu_start() cpu: 4
+cpu_start() cpu: 5
+cpu_start() cpu: 6
+cpu_start() cpu: 7
+arm_cpu_init(): cpu 1 online
+Waiting on <dict ID="0"><key>IOProviderClass</key><string ID="1">IOMedia</string><key>Content</key><string ID="2">Apple_HFS</string></dict>
+arm_cpu_init(): cpu 2 online
+arm_cpu_init(): cpu 4 online
+arm_cpu_init(): cpu 5 online
+arm_cpu_init(): cpu 3 online
+arm_cpu_init(): cpu 6 online
+arm_cpu_init(): cpu 7 online
+NEMMC alive beats/reads 0000000100000003
+NEMMC alive blocks 0000000000000017
+NEMMC IOMedia count 0000000000000052
+NEMMC alive beats/reads 0000000200000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000000300000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000000400000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000000500000003
+NEMMC alive blocks 0000000000000017
+NEMMC media table
+NEMMC media uuid=- bsd=disk0 name=Xiaomi sirius eMMC Media
+NEMMC media bytes 62537055744
+NEMMC media uuid=0DC22D9A-641D-5BCA-AD26-3D70A37C9DCD bsd=disk0s1 name=switch
+NEMMC media bytes 8192
+NEMMC media uuid=AF254BEB-7FCA-9A15-975C-F0699035314D bsd=disk0s2 name=bk1
+NEMMC media bytes 8192
+NEMMC media uuid=97A71E33-4E6F-9B0D-7106-92E5EF8366A3 bsd=disk0s3 name=dpo
+NEMMC media bytes 8192
+NEMMC media uuid=99B6BF74-25AD-D8CE-F440-478809CDE56E bsd=disk0s4 name=bk2
+NEMMC media bytes 20480
+NEMMC media uuid=FB319EFE-2890-F20D-6613-16B61FD89FC5 bsd=disk0s5 name=sec
+NEMMC media bytes 32768
+NEMMC media uuid=C873818B-630B-151C-5B29-6A8757B170C3 bsd=disk0s6 name=ssd
+NEMMC media bytes 32768
+NEMMC media uuid=C67283A7-751A-77FB-A3FA-D48E994D5CCD bsd=disk0s7 name=limits
+NEMMC media bytes 32768
+NEMMC media uuid=AB689624-DAF4-73BD-1D8A-EEA34E0835F1 bsd=disk0s8 name=bk3
+NEMMC media bytes 32768
+NEMMC media uuid=A77DC3D6-1831-374E-88EE-D114BAFF6EE3 bsd=disk0s9 name=bk4
+NEMMC media bytes 65536
+NEMMC media uuid=77F0D87D-79D0-0F12-059C-AE5F0A4B9AEF bsd=disk0s10 name=vbmeta
+NEMMC media bytes 131072
+NEMMC media uuid=B77ED1C4-D2E3-0207-A7BA-982ACA22EF18 bsd=disk0s11 name=qupfw
+NEMMC media bytes 131072
+NEMMC media uuid=B48D1F7F-F32E-B45E-303D-1F1615D3560F bsd=disk0s12 name=apdp
+NEMMC media bytes 262144
+NEMMC media uuid=FE9AEC3E-2DF9-E3E8-5F3C-8A5AC3DC5966 bsd=disk0s13 name=msadp
+NEMMC media bytes 262144
+NEMMC media uuid=53FE61E1-5630-144F-882A-1C8FC4CD984B bsd=disk0s14 name=fsc
+NEMMC media bytes 262144
+NEMMC media uuid=F8A86D35-27C9-84A5-B786-23BBC5140C3F bsd=disk0s15 name=xbl_config
+NEMMC media bytes 262144
+NEMMC media uuid=7900BC1A-FEEA-E671-EE9D-B9D98A3CCE7E bsd=disk0s16 name=storsec
+NEMMC media bytes 262144
+NEMMC media uuid=6A8294E9-54C2-28CA-E5EB-C69ADA3E64E0 bsd=disk0s17 name=storsecbak
+NEMMC media bytes 262144
+NEMMC media uuid=C6B0ACDE-3624-9216-3958-9C8D3E8C8B59 bsd=disk0s18 name=aop
+NEMMC media bytes 524288
+NEMMC media uuid=388CB1DA-3FCB-61B8-5021-C0DF044365DF bsd=disk0s19 name=bk5
+NEMMC media bytes 524288
+NEMMC media uuid=6833B45E-77E0-7EBD-A9E5-BD41B1C05E70 bsd=disk0s20 name=ddr
+NEMMC media bytes 1048576
+NEMMC media uuid=CA6F80CB-906D-0B72-59F1-AC978DD435F3 bsd=disk0s21 name=keystore
+NEMMC media bytes 1048576
+NEMMC media uuid=2FDBCA65-6239-7BF6-3A7B-0C40A53CA49A bsd=disk0s22 name=frp
+NEMMC media bytes 1048576
+NEMMC media uuid=7FA853FC-5C78-1BA8-C51D-642039165E02 bsd=disk0s23 name=bk6
+NEMMC media bytes 1048576
+NEMMC media uuid=574EF7AA-3668-9B9A-E6AA-32988C0B5F8E bsd=disk0s24 name=bk7
+NEMMC media bytes 1048576
+NEMMC media uuid=79D83B97-E654-2AAC-603D-95B616A1631F bsd=disk0s25 name=hyp
+NEMMC media bytes 1048576
+NEMMC media uuid=50B00C06-37A4-8588-4BB3-77747C5B5191 bsd=disk0s26 name=hypbak
+NEMMC media bytes 1048576
+NEMMC media uuid=391C1805-A567-FABC-0FE4-388EB67A85F4 bsd=disk0s27 name=cmnlib
+NEMMC media bytes 1048576
+NEMMC media uuid=CA2EBE58-3685-BBF3-5D47-6447B683CA4F bsd=disk0s28 name=cmnlibbak
+NEMMC media bytes 1048576
+NEMMC media uuid=1EBB484C-B106-4E57-AC39-E40E287320E1 bsd=disk0s29 name=cmnlib64
+NEMMC media bytes 1048576
+NEMMC media uuid=1C064E8B-E299-F867-B37B-5B3C51DF96D3 bsd=disk0s30 name=cmnlib64bak
+NEMMC media bytes 1048576
+NEMMC media uuid=03F2C783-99AB-EEB7-5794-06ED76FC1FE5 bsd=disk0s31 name=keymaster
+NEMMC media bytes 1048576
+NEMMC media uuid=F9D4A263-ED35-E199-666E-92554DD1D044 bsd=disk0s32 name=keymasterbak
+NEMMC media bytes 1048576
+NEMMC media uuid=F7D226A0-0AD2-3191-7CFD-440B55EB6F97 bsd=disk0s33 name=bk8
+NEMMC media bytes 1048576
+NEMMC media uuid=A423D3DD-E6DD-EECB-C3F2-308D53BE3D1F bsd=disk0s34 name=bk9
+NEMMC media bytes 1048576
+NEMMC media uuid=DB1F65BE-2FF0-E07F-7AE8-E003596C3465 bsd=disk0s35 name=dip
+NEMMC media bytes 1048576
+NEMMC media uuid=D82755A4-E3D6-F00C-9C8F-64AB5933ED61 bsd=disk0s36 name=bluetooth
+NEMMC media bytes 1048576
+NEMMC media uuid=A5D5F3D2-A03B-FEFE-BF6D-29990C833B08 bsd=disk0s37 name=devcfg
+NEMMC media bytes 2097152
+NEMMC media uuid=372A7A92-2986-E864-D89A-08B55EBE9044 bsd=disk0s38 name=devcfgbak
+NEMMC media bytes 2097152
+NEMMC media uuid=FF048607-79BD-A439-A6AC-21993D33E7C9 bsd=disk0s39 name=abl
+NEMMC media bytes 2097152
+NEMMC media uuid=AF37F4B8-6D72-35C6-854B-CE3CB0F59220 bsd=disk0s40 name=ablbak
+NEMMC media bytes 2097152
+NEMMC media uuid=CD19122F-2E9D-2050-ABA5-81370E5BF1CC bsd=disk0s41 name=toolsfv
+NEMMC media bytes 2097152
+NEMMC media uuid=7A79AB10-1426-227C-342A-A90B73321D5B bsd=disk0s42 name=sti
+NEMMC media bytes 2097152
+NEMMC media uuid=606BAB77-6DE3-D493-8D84-AEE7EEE89A05 bsd=disk0s43 name=ImageFv
+NEMMC media bytes 2097152
+NEMMC media uuid=F7236F7C-EAB4-E247-3897-7F21BDACA9AA bsd=disk0s44 name=bk10
+NEMMC media bytes 2097152
+NEMMC media uuid=44FFDD11-BEF3-0DCE-2691-B162FAF0B03F bsd=disk0s45 name=misc
+NEMMC media bytes 4194304
+NEMMC media uuid=211AF5CD-ADB0-C67B-5C4A-457E804973C9 bsd=disk0s46 name=mdtpsecapp
+NEMMC media bytes 4194304
+NEMMC media uuid=DC1C72EC-6DB8-24BB-9E86-A80CFFE0A514 bsd=disk0s47 name=mdtpsecappbak
+NEMMC media bytes 4194304
+NEMMC media uuid=DCC34E66-2584-7082-ACA3-D55D3F08F61B bsd=disk0s48 name=dtbo
+NEMMC media bytes 8388608
+NEMMC media uuid=C9C75271-98FF-AEC1-3577-AD0DC48FAA0D bsd=disk0s49 name=bk11
+NEMMC media bytes 8388608
+NEMMC media uuid=0869D042-6520-397D-30E7-5C524985FF43 bsd=disk0s50 name=xbl
+NEMMC media bytes 8388608
+NEMMC media uuid=BF5EB56A-F596-7C1D-F434-583F5C39C56E bsd=disk0s51 name=xblbak
+NEMMC media bytes 8388608
+NEMMC media uuid=3D502B54-4C6C-DEBC-18FB-B7D6DECB876F bsd=disk0s52 name=tz
+NEMMC media bytes 8388608
+NEMMC media uuid=7EFBB5C0-C40A-7E86-1545-FB4F063C93A2 bsd=disk0s53 name=tzbak
+NEMMC media bytes 8388608
+NEMMC media uuid=8E3E36F1-8461-6644-0B51-4783F61DB457 bsd=disk0s54 name=logfs
+NEMMC media bytes 8388608
+NEMMC media uuid=1DD3D360-AADE-C68F-6AF7-B17AC23CB186 bsd=disk0s55 name=spunvm
+NEMMC media bytes 8388608
+NEMMC media uuid=4DE7E862-E51F-F2A5-91FD-89AE15961069 bsd=disk0s56 name=bk12
+NEMMC media bytes 16777216
+NEMMC media uuid=20E87753-9C3D-B7B2-B82B-6BE4F199394C bsd=disk0s57 name=fsg
+NEMMC media bytes 8388608
+NEMMC media uuid=1B381D02-FADD-5844-3B02-0DE7871D7A44 bsd=disk0s58 name=bk13
+NEMMC media bytes 58720256
+NEMMC media uuid=37281615-F339-7B9A-9B81-DED34BBEBEF7 bsd=disk0s59 name=modemst1
+NEMMC media bytes 8388608
+NEMMC media uuid=8678261C-B0CB-0C7D-56AE-DA9937470DA8 bsd=disk0s60 name=modemst2
+NEMMC media bytes 8388608
+NEMMC media uuid=D7833DDE-386B-6F1B-D487-C57137024632 bsd=disk0s61 name=bk14
+NEMMC media bytes 50331648
+NEMMC media uuid=673D5860-8171-44A1-D00A-EB5C9558510C bsd=disk0s62 name=devinfo
+NEMMC media bytes 16777216
+NEMMC media uuid=5392E065-A80A-7926-01C3-95148CA2558D bsd=disk0s63 name=oops
+NEMMC media bytes 16777216
+NEMMC media uuid=D3A4F5D5-CC21-0015-24DA-BC4B969BE34B bsd=disk0s64 name=mdtp
+NEMMC media bytes 33554432
+NEMMC media uuid=7BB1977A-4341-0D22-8D41-CE15363C66DF bsd=disk0s65 name=dsp
+NEMMC media bytes 33554432
+NEMMC media uuid=68298950-833B-46F7-0CAE-9FDBB25DCC0E bsd=disk0s66 name=logo
+NEMMC media bytes 33554432
+NEMMC media uuid=458DFCEB-ABE6-125A-0315-46575A918ADA bsd=disk0s67 name=splash
+NEMMC media bytes 67108864
+NEMMC media uuid=F1C67902-F5E4-E9CA-0296-B4E3B0794660 bsd=disk0s68 name=persist
+NEMMC media bytes 67108864
+NEMMC media uuid=32B02FC3-4FFA-1D02-01CA-A442AA8DB7D9 bsd=disk0s69 name=persistbak
+NEMMC media bytes 67108864
+NEMMC media uuid=8555C348-62E5-77C4-F8FD-60352CA6CCD5 bsd=disk0s70 name=boot
+NEMMC media bytes 67108864
+NEMMC media uuid=86A1F809-CA49-39CA-9DDA-94B2B3B04C1A bsd=disk0s71 name=recovery
+NEMMC media bytes 67108864
+NEMMC media uuid=64DDD14B-6B15-1BB8-AAB8-17943295239B bsd=disk0s72 name=backos
+NEMMC media bytes 67108864
+NEMMC media uuid=028A4863-6F40-83D8-F941-D2C6EB619C62 bsd=disk0s73 name=minidump
+NEMMC media bytes 67108864
+NEMMC media uuid=0218570C-C2AA-952A-2FCA-885D05A2771B bsd=disk0s74 name=logdump
+NEMMC media bytes 67108864
+NEMMC media uuid=2B43C2AB-0854-0706-1403-AB5C1AF6D048 bsd=disk0s75 name=rawdump
+NEMMC media bytes 134217728
+NEMMC media uuid=661E28B0-25F5-A8E9-6237-9570F618995D bsd=disk0s76 name=modem
+NEMMC media bytes 201326592
+NEMMC media uuid=CD21BCA3-7497-2B8A-8904-5382A963C1F9 bsd=disk0s77 name=cache
+NEMMC media bytes 268435456
+NEMMC media uuid=2FAA2423-18ED-6483-F42A-D42A193B3BB0 bsd=disk0s78 name=cust
+NEMMC media bytes 872415232
+NEMMC media uuid=C0B5D167-C405-0EC0-6A1A-73B8F3980041 bsd=disk0s79 name=system
+NEMMC media bytes 3221225472
+NEMMC media uuid=7F3BE5FD-A6A1-5DA9-A2F3-D80B56304CEA bsd=disk0s80 name=vendor
+NEMMC media bytes 3221225472
+NEMMC media uuid=C6A57A64-83DE-D092-F60F-191CD0036BE0 bsd=disk0s81 name=userdata
+NEMMC media bytes 53678685696
+NEMMC media count 82
+NEMMC alive beats/reads 0000000600000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000000700000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000000800000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000000900000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000000a00000003
+NEMMC alive blocks 0000000000000017
+NEMMC IOMedia count 0000000000000052
+NEMMC alive beats/reads 0000000b00000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000000c00000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000000d00000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000000e00000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000000f00000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000001000000003
+NEMMC alive blocks 0000000000000017
+NEMMC cpu mpidr 0000000000000100
+NEMMC cpu MHz 1516
+NEMMC window base 000000009f804000
+NEMMC window size 00000000aa000000
+NEMMC db-runs 80000000+5700000,97C00000+4400000,9F800000+12FA6B000
+NEMMC efi-map 80000000+5700000 type 7 x1
+NEMMC efi-map 85700000+600000 type 0 x1
+NEMMC efi-map 85d00000+100000 type 7 x1
+NEMMC efi-map 85e00000+3100000 type 0 x1
+NEMMC efi-map 88f00000+1c00000 type 7 x1
+NEMMC efi-map 8ab00000+cb17000 type 0 x1
+NEMMC efi-map 97617000+4e9000 type 7 x1
+NEMMC efi-map 97b00000+100000 type 0 x1
+NEMMC efi-map 97c00000+4400000 type 7 x1
+NEMMC efi-map 9c000000+2300000 type 0 x1
+NEMMC efi-map 9e300000+100000 type 7 x1
+NEMMC efi-map 9e400000+1400000 type 0 x1
+NEMMC efi-map 9f800000+4000 type 7 x1
+NEMMC efi-map 9f804000+aa000000 type 1 x1
+NEMMC efi-map 149804000+86ffc000 type 7 x1
+NEMMC efi-map 1d0801000+105000 type 7 x1
+NEMMC efi-map 1d0906000+c000 type 4 x1
+NEMMC efi-map 1d0912000+26000 type 7 x1
+NEMMC efi-map 1d0938000+d000 type 3 x1
+NEMMC efi-map 1d0946000+6000 type 7 x1
+NEMMC efi-map 1d094c000+2000 type 4 x1
+NEMMC efi-map 1d094e000+1c000 type 1 x1
+NEMMC efi-map 1d096a000+8000 type 4 x1
+NEMMC efi-map 1d0972000+10000 type 9 x1
+NEMMC efi-map 1d0982000+5000 type 4 x1
+NEMMC efi-map 1d0988000+3000 type 4 x1
+NEMMC efi-map 1d098b000+22000 type 6 x1
+NEMMC efi-map 1d09ad000+1baa7000 type 4 x1
+NEMMC efi-map 1ec454000+105d000 type 3 x1
+NEMMC efi-map 1ed4b2000+ffce000 type 3 x1
+NEMMC efi-map 1fd480000+10000 type 5 x1
+NEMMC efi-map 1fd490000+230000 type 3 x1
+NEMMC load user % 0
+NEMMC load sys % 0
+NEMMC load idle % 99
+NEMMC alive beats/reads 0000001100000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000001200000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000001300000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000001400000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000001500000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000001600000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000001700000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000001800000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000001900000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000001a00000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000001b00000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000001c00000003
+NEMMC alive blocks 0000000000000017
+NEMMC alive beats/reads 0000001d00000003
+NEMMC alive blocks 0000000000000017
+Still waiting for root device
+PANIC: Failed to mount root device @IOKitBSDInit.cpp:938
+LR0=0xfffffff007ad5c08
+LR1=0xfffffff00780dfa4
+LR2=0xfffffff007362e7c
+LR3=0xfffffff00752d4cc
+ESR=0x0000000096000046
+ELR=0xfffffff00752ee28
+FAR=0

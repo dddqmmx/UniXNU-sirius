@@ -11,8 +11,8 @@ schema_version = 1
 [device]
 name = "sirius"
 soc = "SDM710"
-os_profile = "ipados-17.7.11-21H461"
-summary = "Xiaomi Mi 8 SE running the UniXNU source kernel through its own U-Boot UEFI: 8 GiB persistent APFS Data container resized in-kernel with zero ENOSPC, launchd early boot, SpringBoard, backboardd and Setup.app running with sustained ~19 fps CPU-copied GOP presentation, AppleKeyStoreState and FTS521/ShengHidInput touch active, and unattended USB FASTBOOT return to ABL verified."
+os_profile = "ios-26.5.2-23F84-arm64"
+summary = "Xiaomi Mi 8 SE (SDM710, no PAC) bring-up target switched from iPadOS to iPhone18,2 iOS 26.5.2 (23F84, xnu-12377.121.6): ordinary ARM64 XNU kernel, V54AP ADT identity, SDM710 USB/PMIC reset diagnostics, and strict offline userland lowering preflight."
 
 [[area]]
 id = "configuration"
@@ -26,17 +26,19 @@ inputs = [
   "Hardware sources: mainline sdm670.dtsi, the vendor kernel tree and measurements on the phone.",
 ]
 configuration = [
-  "board.toml is format 2 (schema_version = 2) and selects soc_source = sdm710 and os_profile = ipados-17.7.11-21H461.",
+  "board.toml is format 2 (schema_version = 2) and selects soc_source = sdm710 and os_profile = ios-26.5.2-23F84-arm64.",
   "dts/sirius.dts describes memory, the eight cores and their affinities, and includes the SoC DTSI for the GIC, PSCI and counter.",
-  "configs/sirius_defconfig keeps the first-console kernel configuration and turns off the profile settings the image does not use yet.",
-  "The prelink roots, slide, early security initializer and Apple device-tree identity come from the OS profile; the board adds sleep-disabled, the product model and the button set.",
+  "configs/sirius_ios26_defconfig selects build-xnu-12377.sh, ArmDTPlatform, ArmCpu, source corecrypto/pthread, APFS digest KPIs, commpage dyld_flags and the DWC3 console.",
+  "The iPhone18,2 (V54AP, 23F84) IPSW and Apple device-tree identity come from the OS profile; the board keeps its SDM710 hardware tree, sRGB display gamut, kern.maxvnodes = 98755 and button set.",
 ]
 procedure = [
-  "From a UniXNU checkout: ./unixnu defconfig sirius_defconfig -D ../UniXNU-sirius.",
-  "Then ./unixnu fetch, ./unixnu status --json and ./unixnu tree; the output is out/sirius/ipados-17.7.11-21H461/sirius/.",
+  "From the UniXNU-ios26 checkout: ./unixnu defconfig sirius_ios26_defconfig -D ../UniXNU-sirius-ios26.",
+  "Then ./unixnu status --json -D ../UniXNU-sirius-ios26 and ./unixnu ipsw fetch DeviceTree StaticTrustCache Cryptex1,SystemTrustCache -D ../UniXNU-sirius-ios26; the output is out/sirius/ios-26.5.2-23F84-arm64/sirius_ios26/.",
   "Compile the hardware tree through the payload step (prototype: dtc -I dts -O dtb -i <soc>/dts dts/sirius.dts).",
 ]
 findings = [
+  "Target switched from iPad17,3 iPadOS 26.5.2 to the iPhone18,2 iOS 26.5.2 (23F84, v54ap, chip_id 0x8150, board_id 14) restore image proven on non-PAC hardware by UniXNU-zeta; HTTP range extraction verified DeviceTree.v54ap.im4p (9305d468...), StaticTrustCache (c57bd130...) and Cryptex1,SystemTrustCache (2fe34165...).",
+  "Removed stale iPadOS 17 chip_id 8011, root_match_volume_uuid and boot-manifest-hash overrides from board.toml so the iPhone V54AP identity and future lowered root UUID are not shadowed.",
   "Local 2026-10-31 verification (kernel ad6a9709..., payload afa7def2...): removing sirius-skip-setup=1 while no Metal GPU driver exists avoids the PosterBoard SIGABRT loop and lets SpringBoard launch CPU-rendered Setup.app, while NativeEmmc + BootWatchdogPolicy seed and online-resize the persistent eMMC APFS Data container from 32 MiB to 8 GiB (2097152 blocks) with zero ENOSPC.",
   "Local 2026-10-30 integration selects GopFramebuffer, AppleKeyStoreState and ShengHidInput, links the late display archive, enables CPU frequency, FTS521 touch and GMU phase 2, and carries a 256 MiB Data seed fallback. Persistent Data mounted on this unit, but 256 MiB still reaches ENOSPC. Default panic autoreset has been removed because the panic buffer may contain recovered assertions.",
   "board.toml gained build-sirius-emmc.py in the archive list next to the USB console entry.",
@@ -50,6 +52,7 @@ findings = [
   "The data-seed workflow builds the seed at the size given as its size_mib input: 32 MiB is the ungrown fixture the reference port mounts, and the 256/8192 MiB values are the grown containers; the seed carries a new volume UUID per build, which NativeEmmc reports when it differs from CONFIG_XNU_OWNER_DATA_VOLUME_UUID.",
   "A 32 MiB seed is the ungrown fixture itself and skips the container grow: the grown 256 MiB container attaches but APFS publishes no volume from it (checkpoint desc/data 0/0, no disk1s1), while the reference port mounts the ungrown 32 MiB seed as disk3s1/OwnerData.",
   "The seed in use is the ungrown 32 MiB fixture (release asset data-seed-32mib, owner-data.cdr cd3bbd46..., volume 7F00D031-C00B-4368-A3FF-D4788A1323D6); CONFIG_XNU_OWNER_DATA_VOLUME_UUID records it.",
+  "iOS 26: configs/sirius_ios26_defconfig enables CONFIG_XNU_BOARD_STORAGE, CONFIG_XNU_KDK_IOKIT_ABI, CONFIG_XNU_APFS_CSR, CONFIG_XNU_APFS_MLDSA, CONFIG_XNU_EDT_FSTAB, CONFIG_XNU_NATIVE_IOS_CLASS_ALIASES, CONFIG_XNU_TRUST_CACHE_RUNTIME and CONFIG_XNU_NATIVE_UFS_OWNER_ROOT, and board.toml passes sirius_emmc_hs=3, sirius_emmc_win=1, sirius-allow-unverified=1 and launchdsuffix=release, so the 12377 kernel carries the eMMC stack, KDK 25F84 APFS/AMFI/Zlib prelink ABI, trust cache runtime and read-only OwnerRoot bridge (see storage).",
 ]
 completion = [
   "status --json resolves the ARM64, sdm710, iPadOS and device layers, prints a non-empty patch order and shows the device package as kits/sirius.",
@@ -129,6 +132,7 @@ findings = [
   "The boot-progress TOPO row confirms the kernel topology on hardware: boot=0 max=7 nums=01234567.",
   "With sheng-smp=1 the native ArmCpu claims every /cpus nub; without it the kernelcache AppleARMCPU takes the nubs and panics with \"CPU configuration in device tree is invalid\" because it requires /cpus/max_cpus.",
   "AppleARMCPU still wins the nubs at the current stage, which is the open IOKit blocker.",
+  "xnu-12377 built for arm64-apple-ios26.0 must pass -mcpu=cyclone: clang's default CPU for that triple is apple-a12 (+v8.3a +pauth), so __builtin_return_address(0) lowers to xpaci (0xdac143e0|Rd) instead of hint #7, and Kryo 360 traps it as an undefined instruction at _kprintf+0xe0 (sleh.c:1254, instr dac143f3). kernel.py and build-xnu-12377.sh now set it; the kernel in image da77ab5d... has no xpaci and boots with all eight ArmCpu cores online.",
 ]
 completion = [
   "Every enabled CPU reaches its entry checkpoint and timer/IPI handling works on each enabled CPU with the board INTID.",
@@ -181,7 +185,7 @@ evidence = [
 id = "storage"
 status = "device-verified"
 components = []
-paths = ["docs/HANDOFF.zh-CN.md", "package/sirius_emmc.c", "package/NativeEmmc.cpp", "scripts/derive-storage-bindings.py", "scripts/build-native-emmc.py"]
+paths = ["docs/HANDOFF.zh-CN.md", "package/sirius_emmc.c", "package/NativeEmmc.cpp", "package/SiriusBoardStorage.cpp", "scripts/derive-storage-bindings.py", "scripts/build-native-emmc.py", "scripts/build-board-storage-12377.py", "scripts/prelink-kdk-apfs-12377.py"]
 inputs = [
   "The reference unit is eMMC, not UFS: the UFS transport and its sheng integration points do not apply to this board.",
   "The original kernelcache is the only source of IOStorageFamily's addresses; its kext images carry no symbol table, so they are derived from the dispatch table itself.",
@@ -189,6 +193,7 @@ inputs = [
 configuration = [
   "board.toml lists build-sirius-emmc.py (the SDCC1 probe) and build-native-emmc.py (the IOKit block driver) in [kernel] archives; CONFIG_XNU_NATIVE_UFS stays off.",
   "[userdata] carries the 512-byte geometry and the OS/SystemOS windows read from the device's own GPT.",
+  "xnu-12377: configs/sirius_ios26_defconfig sets CONFIG_XNU_BOARD_STORAGE=y. UniXNU's build-xnu-12377.sh then runs scripts/build-board-storage-12377.py, which archives the public IOStorageFamily 337.100.1 (UniXNU build-storage-12377.py --family-only), sirius_emmc.c, NativeEmmc.cpp built with SIRIUS_XNU_12377=1 and SiriusBoardStorage.cpp into libBoardStorage.a; UniXNU's native-board-storage.patch matches BoardStorage on the platform expert device and IOBlockStorageDriver, IOGUIDPartitionScheme and IOMediaBSDClient on what it publishes.",
 ]
 procedure = [
   "Build the kernel with that archive list: the driver's storage imports are bound at the prelink slide and archived with it.",
@@ -219,6 +224,12 @@ findings = [
   "The eMMC driver reads in runs and climbs the card clock (see diagnostics); the eMMC windows are authorized for the SystemOS union mount by package/NativeEmmc.cpp's native_verified_block_* hooks, only under sirius-allow-unverified=1.",
   "The Data seed reaches the kernel as the payload initrd: DarwinBoot copies it into the window named by /chosen/memory-map/RAMDisk and IOKitBSDInit turns that into md0. APFS refused to mount /dev/md0 (invalid fsindex) with the kernel-side md path, so NativeEmmc publishes the seed itself as a read-write RAM window (prepareDataSeed) and answers native_ram_block_volume_seed over it, the way RamBlock does on sheng; the owner Data mount then finds the volume by its provider chain instead of the block layer'd whole-disk naming.",
   "The Data seed is published by package/NativeEmmc.cpp itself (prepareDataSeed): the seed DarwinBoot put in /chosen/memory-map/RAMDisk becomes a read-write RAM block device named Data, APFS publishes its volume there, and the owner Data mount opens it through native_ram_block_volume_seed. Nothing is written back to the payload; the volume starts from the seed at every boot.",
+  "2026-11-07, iOS 26 xnu-12377 (kernel a58c7934..., vendor image out/ios26-emmc2.img a10efcf6..., uncommitted): IOKit matches BoardStorage on the platform expert device, which runs the SDCC1 probe and NativeEmmc. The card answers at RCA 1, the GPT header reads (84 entries of 128 bytes), the clock climbs 400 kHz -> 25 -> 50 MHz with 256-block runs, NativeEmmc publishes 0x747BFDF blocks of 512 bytes, IOGUIDPartitionScheme reads LBA 0, LBA 1 and the 21-sector entry array, and IOMediaBSDClient names 82 IOMedia: disk0 (62537055744 bytes) and disk0s1..disk0s81, with vendor = disk0s80 and userdata = disk0s81 (53678685696 bytes). The boot then waits for an Apple_HFS root and panics 'Failed to mount root device' (IOKitBSDInit.cpp:938), the expected stop without a root image.",
+  "The 12377 kernel prelinks no kext, so its IOStorageFamily is compiled from Apple's public source and linked next to the driver; the address binding of the 10063 recipes (build-native-emmc.py, storage-bindings.json) does not apply. The archive's import audit finds no kernel collision and no unresolved import, and the same NativeEmmc.cpp still builds for the 10063 kernel with exactly the storage imports it had.",
+  "sirius_emmc_hs=3 stops at 50 MHz on this card: the 100 MHz step needs HS200 and its tuning, which the transport does not implement, so emmc_speed_up keeps the high-speed (timing 1) rate it proved.",
+  "The 12377 build is read-only by construction: SIRIUS_XNU_12377 leaves out the persistent Data window (it would write the iPadOS 17 Data container behind the root image), the APFS containerResize call at a 21H461 kext address and the 10063 owner-mount hooks, and the driver hangs off BoardStorage rather than IOService::getPlatform(). sirius_usb_log_char() becomes a line-buffered kprintf, which the native DWC3 console carries to the host.",
+  "2026-11-07, KDK 25F84 APFS/AMFI/Zlib prelink verified on hardware (native kernel 669dee47..., prelinked kernel 750bae2b..., vendor image out/ios26-apfs1.img 90d4e605..., docs/evidence/ios26-apfs-prelink-20261107.log): scripts/prelink-kdk-apfs-12377.py runs the five UniXNU-zeta gates (8-executable closure with 0 missing/ambiguous symbols, 5 primary vtables identical, 23 paired C++ vtables identical with 0 instance-size mismatches, PAC-lowered ordinary-ARM64 emission of 28131328 bytes / 17 metadata entries, and independent pointer verification). On the phone, AppleImage4 7.0.0, AMFI (reading model iPhone18,2), apfs 2811.121.1 and AppleFSCompressionTypeZlib all start cleanly; with sirius_emmc_win=1, NativeEmmc publishes the two read-only SHNGROOT windows and KDK APFS runs nx_mount on both (xid 14 on SystemOS, xid 418 on OS), publishing disk3/disk4 AppleAPFSMedia containers and disk3s1 (UUID 8846FE78-2910-4297-AF97-D59BB6F8FC16, 3303014400 bytes) and disk4s1 (UUID 04769D26-2CA0-4825-B443-E2E5F88300F2, 6077546496 bytes) for 89 total IOMedia over 134 eMMC reads (1054 blocks) with zero errors before stopping at the expected root-device wait.",
+  "2026-11-07, xnu-12377 OwnerRoot bridge, KDK TrustCache ABI fix and EL0 PID 1 launchd execution verified on hardware (native kernel b1b3f7e0..., prelinked kernel 9e2013fd..., vendor image out/ios26-rootauth3.img 84b99f7c..., docs/evidence/ios26-rootauth-launchd-20261107.log): (1) NativeEmmc.cpp implements native_ufs_owner_root_authorized under SIRIUS_XNU_12377=1 and CONFIG_XNU_NATIVE_UFS_OWNER_ROOT=y, verifying that the mounted root is read-only, matches the selected rootdev and sits on a read-only NativeEmmc SHNGROOT window under sirius-allow-unverified=1. (2) prepare-xnu-source.py previously restored xnu-8796.101.5 (iOS 16) EXTERNAL_HEADERS/TrustCache/Types.h into .cache/xnu-work, shadowing KDK 25F84's TrustCache/Types.h; that stale header omitted bool tombstoned in TrustCache_t and kTCQueryTypeMobileAssetCode = 0x03 (making query_trust_cache reject AMFI's query_type 3 with 'invalid query type: 3'). Skipping and removing EXTERNAL_HEADERS/TrustCache on xnu-12377 fixes both: load_static_trust_cache loads both external trust cache modules (0 and 1), KDK APFS mounts disk4s1 read-only as /, OwnerRoot authorizes it (apple_autherr=80, owner=1), Zlib decompresses /sbin/launchd and /usr/lib/dyld, AMFI validates both against the static trust cache, execve of /sbin/launchd returns 0 ('proc-trace: exec pid 1 ppid 0 ? error 0') and PID 1 runs dyld and libignition in EL0 userland over 252 eMMC reads (2638 blocks), then returns to fastboot on ZETA:REBOOT-BOOTLOADER.",
 ]
 completion = [
   "The eMMC registers, GPT and the SHNGROOT windows are correct; APFS mounts the OS volume, bsd_init completes, init execs /sbin/launchd and execve returns 0.",
@@ -230,6 +241,7 @@ limits = [
   "The exec policy no longer needs a boot argument: the payload carries the original trust-cache bundle and the kernel initialises its runtime at startup. The sirius-skip-cs bypass is kept in the patch series, unused, in case a future image falls outside the bundle.",
 ]
 next_action = [
+  "iOS 26 root: link APFS (KDK 25F84) into the 12377 kernel, write the lowered 23F84 root image and SystemOS into userdata with a new SHNGROOT manifest, then publish the windows with sirius_emmc_win=1 and set root_match_volume_uuid. The manifest on this unit still describes the iPadOS 17 windows.",
   "Verify the 25 MHz switch (sirius_emmc_hs=1) reads the GPT signature back and measure the new block rate; then decide whether the CMD6 high-speed switch to 50 MHz is worth it.",
   "Keep the trust-cache bundle in step with the OS build when the IPSW changes (its sha256 is pinned in board.toml [payload] trust_cache_sha256).",
   "Boot the post-exec-probe kernel and read the counters: two SIRIUS user thread start lines mean the exec'd thread was scheduled, and the last init syscall enter without a matching return names the call it never comes back from.",
@@ -439,19 +451,22 @@ evidence = [
 id = "packaging"
 status = "implemented"
 components = ["XnuPrelink"]
-paths = [ "scripts/make-uboot-payload.py",  "scripts/build-xnu-4k-baseline.sh",  "dts/**"]
+paths = [ "scripts/make-uboot-payload.py",  "scripts/build-xnu-4k-baseline.sh",  "scripts/build-ios26-dev.py",  "scripts/prepare-ios26-userland.py",  "dts/**"]
 inputs = [
   "The payload FAT volume is the flashed artifact of this port; there is no boot.img.",
-  "The prelink inputs (kernel path, roots, slide, early security initializer) come from the OS profile; the board does not override them.",
+  "For iOS 26.5.2 (ios-26.5.2-23F84-arm64), XNU 12377.121.6 builds as ordinary ARM64 and the arm64e iPhone18,2 userland/shared cache is lowered offline.",
 ]
 configuration = [
-  "[payload] sets volume SIRIUSESP, 256 MiB, loader = payload, dram_size and the kernel command line.",
-  "[payload.adt] keeps only chip_id: the platform seed is supplied per build with --unique-chip-id when the userland stages need it.",
+  "[payload] sets volume SIRIUSESP, 512 MiB, loader = payload, dram_size and the kernel command line.",
+  "[payload.adt] inherits chip_id = 8150 from the iPhone18,2 OS profile and sets owned_memory_size = 0xaa000000.",
 ]
 procedure = [
-  "./unixnu build kernel, ./unixnu build package, then bash scripts/build-darwinboot.sh (or the CI workflow), ./unixnu build payload, and finally make-uboot-payload.py --output the volume to flash.",
+  "./unixnu build kernel, ./unixnu build payload, and make-uboot-payload.py --no-prelinked-kexts --output the volume to flash; run scripts/prepare-ios26-userland.py status to audit lowering prerequisites.",
 ]
 findings = [
+  "Built the iPhone18,2 (ios-26.5.2-23F84-arm64) xnu-12377.121.6 ARM64 kernel on Linux with APFS digest/SHA3 KPIs verified and sealed (kernel a90cfc51..., payload kernel b397aae8..., ADT b3028ef2..., payload ba162f6a..., U-Boot vendor volume out/ios26-iphone-v1.img 3521b6b9...).",
+  "scripts/prepare-ios26-userland.py validates the pinned UniXNU-zeta lowering scripts (eb489285...) and the extracted iPhone18,2 23F84 DeviceTree/StaticTrustCache/SystemTrustCache SHA-256 digests, and enforces complete image/island coverage and zero unlowerable instructions on dyld cache proofs.",
+  "make-uboot-payload.py supports --no-prelinked-kexts for the unprelinked xnu-12377 ARM64 kernel while keeping the U-Boot EFI loader layout on the vendor partition.",
   "The Linux namespace build successfully prelinks candidate kernel b94137f50c1558336e7df296ffd1157a1d4b0a850b8b9458b5b52d223c1ad971 and assembles payload a5620f295a09ca8ca6d179d12669777cf2d8356b42307505a7c4bd39a61709bb. This candidate has not been flashed. Board archive recipes bind display/HID ABI and add the real keystore, cpufreq, touch and GMU sources.",
   "The eMMC probe ships in the same force-loaded archive as the USB console, so the package list and payload layout are unchanged.",
   "Format 2 generates kernel.macho.adt from the DTS, so the legacy ADT script is retired; make-uboot-payload.py still finishes the volume because U-Boot needs the EFI binaries inside it.",
@@ -490,7 +505,7 @@ evidence = [
 id = "diagnostics"
 status = "implemented"
 components = []
-paths = ["scripts/tests/**", "scripts/agent-*.sh", "docs/HANDOFF-AGENT*.md", "package/**", "scripts/patch-xnu-entry-probe.py", "scripts/xnu-panic-screen.c", "scripts/capture-usb-console.py", "docs/HANDOFF.zh-CN.md", "docs/evidence/**", "patches/xnu/**", "scripts/build-sirius-emmc.py"]
+paths = ["scripts/tests/**", "scripts/dev/**", "scripts/agent-*.sh", "scripts/ios26-await-return.sh", "docs/HANDOFF-AGENT*.md", "docs/HANDOFF-ios26.md", "docs/PORT-ios26.md", "package/**", "scripts/patch-xnu-entry-probe.py", "scripts/xnu-panic-screen.c", "scripts/capture-usb-console.py", "docs/HANDOFF.zh-CN.md", "docs/evidence/**", "patches/xnu/**", "patches/drivers/**", "scripts/build-sirius-emmc.py"]
 inputs = [
   "The panel and the serial console are the two evidence channels; since the DWC3 CDC console works, the host captures the kernel log directly and photographs are only a fallback.",
 ]
@@ -502,10 +517,12 @@ procedure = [
   "Record the last checkpoint printed on the panel and in the U-Boot/XNU log for every boot, with the kernel and payload hashes of that run.",
 ]
 findings = [
+  "On sirius (SDM710 + PM660), PSCI SYSTEM_RESET reboots normally unless PM660 PON_SOFT_RB_SPARE (0x88f) is set to 0x04 first; native-dwc3-console.c, xnu-panic-screen.c and patch-xnu-entry-probe.py now mark the PMIC bootloader reason before reset and draw 16x16 framebuffer stage squares.",
   "End-to-end unattended debug loop and Setup boot verified on local hardware (kernel ad6a9709..., payload afa7def2...): agent-flash.sh sends FASTBOOT over /dev/ttyACM0 to return XNU to ABL fastboot in 4-7 s without button presses, flashes vendor, reboots into XNU, and capture-usb-console.py records the in-kernel 8 GiB APFS containerResize, zero ENOSPC, Setup launch at 294.6 s, AppleKeyStoreState activity (100 opens, 1430 calls), IOHIDEventDriver attachment (stage 4), and 5514 accepted frame copies (~19 fps). See docs/evidence/sirius-20261030-local-boot.md.",
   "The previous ios-ui-up verdict was a false success based only on process launches: the same capture reports ENOSPC and only six confirmed frame copies. A later 12-second capture received zero bytes, and a nine-byte FASTBOOT request did not produce a fastboot device. USB corrections derive received length from completed TRB residual bytes, parse exact newline commands across packets, and serialize pollers. USB and mock flash failure regressions pass; hardware verification of the new image is pending. See docs/evidence/sirius-20261030-local-boot.md.",
   "A register write-and-read-back test is the next diagnostic for the eMMC data phase, because SDHCI_TRANSFER_MODE reads back 0x33 after writing 0x13, which separates a write the vendor layer ignores from a command that is never sent.",
   "The eMMC probe reports every step (controller registers, the clock tree, the response registers around CMD0/CMD1 and each failure) into the USB console ring, which is how the card clock and CMD2 findings above were obtained without a photograph.",
+  "2026-11-07 (vendor image ios26-iphone-red3.img, da77ab5d...): the xnu-12377 kernel with -enable_kprintf_spam streams its whole boot log over the DWC3 CDC-ACM console and reaches 'Waiting on IOMedia Apple_HFS', then 'PANIC: Failed to mount root device @IOKitBSDInit.cpp:938'; the panic renderer (now 0xd98 bytes, fitted into the alt cave) prints the message, LR0-LR3, ESR/ELR/FAR in red on the screen and mirrors them to USB, and the 45 s PON_SOFT_RB_SPARE reset returns the phone to fastboot. The DEVELOPMENT pe_kprintf.c disables kprintf output unless -enable_kprintf_spam is given. Storage was the open blocker then; the 2026-11-07 storage finding records the eMMC port.",
   "The eMMC probe reports through sirius_usb_log_char() straight into the USB console ring, because kernel console output stops reaching the ring long before bsd_init runs.",
   "Stage bands (entry, pre-MMU, panic) and the TOPO/PROBE/MEM rows replaced the LED and UART guessing of earlier bring-up.",
   "A panic snapshot forces a panel re-render at panic time; before it, rows could show a stale frame.",

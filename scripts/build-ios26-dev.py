@@ -38,11 +38,13 @@ modules = feeds.resolve(ctx)
 # fetching them again; the revisions match, so attach_cached picks them up.
 feeds.attach_cached(ctx, modules)
 print('resolved; tree =', ctx.work / 'tree', flush=True)
+steps = set(os.environ.get('UNIXNU_STEPS', 'kernel,payload').split(','))
 tree_mod.assemble(ctx, modules)
 print('tree assembled', flush=True)
-kernel_mod.build(ctx, modules)
-print('KERNEL BUILD FINISHED', flush=True)
-if os.environ.get('UNIXNU_STEPS', 'kernel,payload').split(',').__contains__('payload'):
+if 'kernel' in steps:
+    kernel_mod.build(ctx, modules)
+    print('KERNEL BUILD FINISHED', flush=True)
+if 'payload' in steps:
     payload_mod.build(ctx)
     print('PAYLOAD BUILD FINISHED', flush=True)
 

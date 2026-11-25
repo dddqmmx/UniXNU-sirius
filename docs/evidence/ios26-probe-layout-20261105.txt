@@ -1,0 +1,4 @@
+Probe layout test 2026-11-05
+
+Command: patch-xnu-entry-probe.py --panic-screen --reset-delay 8 --reset-after _PE_init_platform --in _arm_init --occurrence 1
+Result: stage 4 reset after 0xfffffff007b54b8c; panic renderer 0x9fd bytes at 0xfffffff00751c258 (fallback cave); common funnel 0xfffffff007306790.

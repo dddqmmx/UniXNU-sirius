@@ -11,13 +11,13 @@
 
 | 阶段 | 状态 | 证据 / 位置 |
 | --- | --- | --- |
-| P0 内核构建能力 | 完成（Linux 上验证） | UniXNU 分支 `ios26` 提交 `cb60245` |
-| P1 OS profile / arch 层 | 完成，`defconfig`/`build` 通过 | `profiles/arch/arm64-ios26`、`profiles/os/ipados-26.5.2-23F84-arm64` |
-| P2 board 与 CI | 完成 | UniXNU-sirius 分支 `ios26-26.5.2` 提交 `1a984ae` |
-| 内核产物 | 22 MB arm64 Mach-O，静态 if 完整性已封 | `out/sirius/ipados-26.5.2-23F84-arm64/sirius_ios26/kernel/` |
-| 设备上启动 | **无输出**；彩条=内核自己在画（入口探针阶段 1/2），屏幕文字=panic 屏幕 | 见 §3.3、§8 |
-| P3 板级驱动（控制台/存储/显示） | 未完成 | 见 §8 |
-| P4 userland 降级管线 | 未开始 | 见 §8 |
+| P0 内核构建能力 | 完成（Linux 上验证） | UniXNU 分支 `ios26` 提交 `cb60245` + APFS/CSR/KDK ABI 开关同步 |
+| P1 OS profile / arch 层 | 已切换为 iPhone `ios-26.5.2-23F84-arm64`（`iPhone18,2` / `v54ap`） | `profiles/arch/arm64-ios26`、`profiles/os/ios-26.5.2-23F84-arm64` |
+| P2 board 与 CI | 已切换为 `ios-26.5.2-23F84-arm64`，`porting.toml` 14 项检查通过 | UniXNU-sirius 分支 `ios26-26.5.2` |
+| 内核产物 | 22 MB arm64 Mach-O（含 APFS SHA3/digest-pair KPI 与自检），静态 if 完整性已封 | `out/sirius/ios-26.5.2-23F84-arm64/sirius_ios26/kernel/` |
+| 设备上启动 | 待用新 `ios-26.5.2-23F84-arm64` 镜像二分验证（手机已在 `fastboot` 在线） | 见 §11、§12 |
+| P3 板级驱动（控制台/存储/显示） | DWC3 控制台已带 SDM710 QUSB2/GCC/SMMU 与 PMIC 0x88f 复位标记；存储/显示未迁 | 见 §8、§11 |
+| P4 userland 降级管线 | 已接入 `scripts/prepare-ios26-userland.py` 预检与包装，待解密容器与 `python-capstone` | 见 §8 |
 
 ## 2. 决定路线的三个结论
 
@@ -153,8 +153,38 @@ assembly 补丁）、`.github/workflows/kernel.yml` 参数化、`docs/PORT-ios26
 ## 8. 未完成
 
 - **P3 板级驱动**：DWC3 控制台的 PHY/时钟/SMMU 准备（从 `package/sirius_usb.c` 移植：
-  `sirius_usb_phy_power`、UTMI 选择、`sirius_usb_smmu_plan_bind/apply_bind/guard`）；存储
-  （`NativeEmmc` → 12377）；显示；其余 `package/` 服务。没有控制台就每一步都盲。
+  `sirius_usb_phy_power`、UTMI 选择、`sirius_usb_smmu_plan_bind/apply_bind/guard`）；显示；其余
+  `package/` 服务。没有控制台就每一步都盲。
+- **存储已移植（2026-11-07，真机验证）**：`CONFIG_XNU_BOARD_STORAGE=y` 让 UniXNU 的
+  `build-xnu-12377.sh` 运行 `scripts/build-board-storage-12377.py`，把公开 IOStorageFamily、
+  `sirius_emmc.c`、`NativeEmmc.cpp`（`SIRIUS_XNU_12377=1`，只读）和 `SiriusBoardStorage.cpp`
+  链进内核；UniXNU 的 `native-board-storage.patch` 在平台设备上匹配 `BoardStorage`。手机上
+  得到 disk0 与 disk0s1..disk0s81（vendor = disk0s80，userdata = disk0s81），之后停在
+  「Failed to mount root device」，这是没有 root 镜像时的预期结果。日志见
+  `docs/evidence/ios26-emmc-20261107.log`。
+- **KDK 25F84 APFS/AMFI/Zlib 预链接已验证（2026-11-07，真机验证）**：`scripts/prelink-kdk-apfs-12377.py`
+  对开启 `CONFIG_XNU_KDK_IOKIT_ABI=y`、`CONFIG_XNU_APFS_CSR=y`、`CONFIG_XNU_APFS_MLDSA=y` 的
+  sirius 内核跑完 5 道门禁（8 个 KDK 可执行文件 0 缺失符号、23 张配对 C++ vtable 全部一致、
+  产出 28,131,328 字节普通 ARM64 预链接内核并通过独立指针校验）。手机上 `AppleImage4` 7.0.0、
+  `AMFI`（识别 `iPhone18,2`）、`apfs` 2811.121.1、`AppleFSCompressionTypeZlib` 全部正常启动；
+  开启 `sirius_emmc_win=1` 后，KDK APFS 在 eMMC 的两个只读 `SHNGROOT` 窗口上完成 `nx_mount`
+  并发布 `disk3s1` 与 `disk4s1`（共 89 个 `IOMedia`）。日志见
+  `docs/evidence/ios26-apfs-prelink-20261107.log`。
+- **xnu-12377 OwnerRoot 桥接、KDK TrustCache ABI 修复与 EL0 `launchd` 执行已验证（2026-11-07，真机验证）**：
+  1. `package/NativeEmmc.cpp` 在 `SIRIUS_XNU_12377=1` 下实现 `native_ufs_owner_root_authorized`（启用
+     `CONFIG_XNU_NATIVE_UFS_OWNER_ROOT=y` 与 `CONFIG_XNU_TRUST_CACHE_RUNTIME=y`），校验只读挂载、
+     `dev_t` 匹配及 `NativeEmmc` 只读 `SHNGROOT` 窗口归属。
+  2. 修复 `prepare-xnu-source.py` 把 iOS 16 (`xnu-8796.101.5`) 的 `EXTERNAL_HEADERS/TrustCache/Types.h`
+     写进 `.cache/xnu-work` 遮蔽 KDK 25F84 头文件的问题（旧头文件缺少 `TrustCache_t::tombstoned` 与
+     `kTCQueryTypeMobileAssetCode = 0x03`，导致 `invalid query type: 3`）。
+  3. 在手机上对现有只读 `SHNGROOT` `OS` 窗口做端到端探测（镜像 `out/ios26-rootauth3.img` `84b99f7c...`，
+     日志 `docs/evidence/ios26-rootauth-launchd-20261107.log`）：`load_static_trust_cache` 成功加载 2 个外部
+     trust cache 模块，KDK APFS 将 `disk4s1` 挂载为 `/`，`OwnerRoot` 放行（`apple_autherr=80, owner=1`），
+     Zlib 解压 `/sbin/launchd` 与 `/usr/lib/dyld`，AMFI 验签通过，`execve` 返回 0
+     （`proc-trace: exec pid 1 ppid 0 ? error 0`），PID 1 在 EL0 用户态跑起 `dyld` 与 `libignition`，随后通过
+     USB ` ZETA:REBOOT-BOOTLOADER
+` 无按键退回 fastboot。
+  4. 下一步只剩离线准备解密并降级后的 iPhone18,2 23F84 `OS`/`SystemOS` APFS 容器与合并静态 trust cache。
 - **P4 userland 降级**：zeta 的 `rewrite-zeta-userland.py`、`zeta_dyld_cache.py`、
   `make-zeta-trust-bundle.py`、`grow-zeta-apfs-container.py`、`write-zeta-apfs-files.py`、
   `replace-zeta-root-files.py`、`make-zeta-root-delta.py` 需要泛化移植；需要下载 23F84 的 iPadOS
@@ -182,3 +212,65 @@ assembly 补丁）、`.github/workflows/kernel.yml` 参数化、`docs/PORT-ios26
 - `~/UniXNU/UniXNU-ios26/out/feeds` 是指向主检出 `out/feeds` 的软链（共享 feed 缓存）。
 - 本机内核工具链需要 root 才能原生安装；现成方案是 `~/.unixnu/run.sh`（user namespace + overlay）。
 - 交接时请把 `/tmp` 里的镜像与脚本复制进仓库 `out/`（已在 `out/blobs/` 放了入口复位镜像）。
+
+## 11. 2026-11-05 后半夜：自恢复循环（重要修正）
+
+上一轮的「复位探针」**从来没能回到 fastboot**：屏幕上看到的是一秒后重启进系统、不断循环。
+原因不是探针没跑，而是 sirius 上 **PSCI SYSTEM_RESET 只是普通重启**：ABL 从 PM660 的
+`PON_SOFT_RB_SPARE`（SPMI USID 0、PID 0x08、offset 0x8f）取重启原因，原因 0 就是「继续启动」。
+必须先把 `(spare & 1) | (2 << 1) = 0x04` 写进去，下一次 ABL 才会停在 fastboot。这是 iPadOS 17
+端口 `package/BootReset.c` 早就验证过的序列，26 的探针把它漏掉了。
+
+已改（本分支未提交）：
+
+- `scripts/native-dwc3-console.c`（UniXNU `ios26` worktree）：
+  - 新增 PMIC 标记：`unixnu_qcom_mark_bootloader()`（首次调用时映射 SPMI core/cnfg/obs/rw 四个窗口）
+    与 `unixnu_qcom_mark_bootloader_mapped()`（不映射，供 panic 上下文用）。守卫与 10063 相同：
+    arbiter v5.x、PON owner=AP、subtype 0x04，写入后回读校验。开关是 ADT 的 `unixnu,qcom-reset=1`。
+  - `reset_bootloader()`、探针复位、`unixnu_qcom_reset_to_bootloader()` 都先标记再 PSCI。
+    `serial_init` 里提前调用一次 `reset_initialize()`，这样 panic 时标记不需要再 `ml_io_map`。
+  - **阶段标记**：`paint_stage()` 在屏幕底部画 16×16 的阶段方块（stage N 号位），只映射那一条
+    （整屏放不进 `io_submap`）。`/chosen/unixnu,display`（base/width/height/rowbytes）由 board.toml 提供。
+    阶段：1 serial_init 进入、2 板级准备开始、3 板级准备完成、4 端点配置前、5 RUN 前、6 已枚举。
+    方块比入口彩条可靠：它不依赖入口探针，也不吃 padding。
+- 探针桩（`scripts/patch-xnu-entry-probe.py`）：阶段 3/4 与 `--reset-before` 在复位前 `bl mark`
+  （直接 `bl`，一个指令，不吃洞里的字面量池）。
+- panic 屏幕（`scripts/xnu-panic-screen.c`）：`--panic-reset N` 用上以后，先调用
+  `PANIC_RESET_MARK`（= 上面那个 mapped 版本，符号由 patcher 从内核符号表解析）再 PSCI。
+- 驱动（UniXNU `scripts/unixnu/payload.py`）：`[payload] panic_reset` 转发成 `--panic-reset`。
+- `scripts/ios26-await-return.sh`：等 `fastboot devices` 重新看到 `21e05050`，打印回 fastboot 用了多少秒
+  （时间本身就是「走到哪」的证据；`--timeout` 默认 300 秒）。
+- board.toml：`panic_reset = 60`（panic 停留 60 秒后自动回 fastboot，够拍照）、
+  `[adt.chosen.bytes] unixnu,display`、`[adt.chosen.u32] unixnu,qcom-reset = 1`。
+
+现在一次刷写后的完整行为应当是：开机 → U-Boot 菜单 → 内核 → 屏幕底部出现阶段方块 → 要么 USB 枚举
+出控制台，要么 panic 文字停留 60 秒 → 自动回 ABL fastboot（`fastboot devices` 可见 `21e05050`）。
+**这条循环一旦成立，后面就能无人值守地二分**，不再需要人工按键。
+
+构建：`~/.unixnu/run.sh bash -c 'cd ~/UniXNU/UniXNU-ios26 && UNIXNU_STEPS=kernel,payload python3
+~/UniXNU/UniXNU-sirius-ios26/scripts/build-ios26-dev.py'`（约 7 分钟；先 assemble 再 build）。
+
+坑：`build-platform-12377.py` 会审计编译出的 `NativeDwc3Console.o`：`__text` 里每个
+`isb` 后面必须紧跟 `mrs ..., cntpct_el0`，否则报 “Native USB timeout ISB lacks its emitted
+CNTPCT_EL0 read”。所以这个文件里不要写裸 `isb`（用 `dsb`）。
+
+## 12. 探针二分：从 stage 3 开始
+
+第一次用 `ios26-stages.img` 刷写（02:43）后手机 300 秒内没有回到 fastboot，USB 也没有枚举。
+没有输出时有三种可能，只能靠「回不回来」区分：内核没走到 serial_init、内核死在
+`unixnu_qcom_mark_bootloader` 的 `ml_io_map` 上（映射在 MMU 之后、IOKit 之前本来就不一定可用）、
+或者标记本身没写进 PMIC。
+
+所以下一次刷写把入口探针的 **stage 3**（MMU 打开后 10 秒）打开：桩先在 `serial_init` 里
+`reset_initialize()` 映射好 SPMI，再由 `bl mark` 写 PMIC 0x88f，然后 PSCI 复位。
+`board.toml` 里就是 `entry_probe_reset_delay = 10`（没有 `entry_probe_reset_after`，所以是
+stage 3 而不是 stage 4）。判读：
+
+- 手机约 10 秒后自己回到 `fastboot devices` → 标记与复位通路成立，死亡点在 serial_init 之后，
+  下一步换 stage 4（`_PE_init_platform`）或直接看底部阶段方块/控制台。
+- 仍然自己重启进系统 → PMIC 标记这条路在内核态不通（或 SPMI 映射失败），退回 U-Boot 的
+  `abl_fastboot`（`pmic write 0x88f 0x04; reset`，已在该板上验证过），改用「内核画屏幕 + 人读」。
+- 完全不动 → 内核连 MMU 之后的桩都没执行到，范围收窄到 `_arm_init` 之前。
+
+这一轮之前的一次 `ios26-stages.img`（没有探针）就是上面第一种失败，屏幕上的现象是
+「一秒后重启进系统」的循环——这是用户观察到的，也是把 PMIC 标记做进内核的直接原因。

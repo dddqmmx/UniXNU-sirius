@@ -1,10 +1,7 @@
 # Board description of the Xiaomi Mi 8 SE (sirius, SDM710), read by the unixnu build driver.
 #
-# Format 2: the ARM64, SoC, OS and device layers merge, and this file only states what the
-# board changes. The prelink roots, slide, early security initializer, IPSW identity and the
-# Apple device-tree properties come from the selected OS profile
-# (profiles/os/ipados-17.7.11-21H461/profile.toml of UniXNU); the GIC, timer and CPU topology
-# come from the sdm710 SoC profile and dts/sirius.dts.
+# Format 2: ARM64, SoC, OS and device layers merge. The OS profile supplies the iPhone restore
+# identity and XNU source; the sdm710 SoC profile and dts/sirius.dts supply the hardware.
 
 schema_version = 2
 
@@ -12,9 +9,9 @@ schema_version = 2
 name = "sirius"
 soc = "SDM710"
 soc_source = "sdm710"
-# iOS 26.5.2 (23F84) from the iPadOS 26.5.2 restore image, run on an arm64 kernel: this board
-# has no pointer authentication, so there is no prelink either (the target kexts are arm64e).
-os_profile = "ipados-26.5.2-23F84-arm64"
+# The iPhone iOS userland must be lowered offline: SDM710 has no PAC, and the original arm64e
+# kexts cannot be prelinked into the ARM64 source kernel.
+os_profile = "ios-26.5.2-23F84-arm64"
 description = "Xiaomi Mi 8 SE"
 kit = "sirius"
 
@@ -26,16 +23,12 @@ kit = "sirius"
 [components]
 include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot", "GopFramebuffer", "AppleKeyStoreState", "ShengHidInput"]
 
-# The unchanged iPad7,1 iPadOS 17.7.11 restore image, the same target as fajita and sheng.
-# SDM710 (Kryo 360, Cortex-A75/A55) is ARMv8.2 without pointer authentication, so it runs
-# arm64 userlands only. The 21H461 kernelcache matches the XNU 23.6.0 source pinned by the
-# OS profile and the prelink roots it selects.
-# [ipsw] is not set here: the OS profile (profiles/os/ipados-26.5.2-23F84-arm64) carries
-# the iPad17,3 iPadOS 26.5.2 23F84 restore image and the Apple identity the ADT reproduces.
+# [ipsw] comes from profiles/os/ios-26.5.2-23F84-arm64: iPhone18,2 / v54ap / 23F84.
+# The restore identity does not change this board's SDM710/eMMC/GIC/USB hardware.
 
 [kernel]
 defconfig = "sirius_ios26_defconfig"
-config_fragments = ["arch:configs/common.config", "soc:configs/sdm710.config", "os:configs/ipados.config"]
+config_fragments = ["arch:configs/common.config", "soc:configs/sdm710.config", "os:configs/ios.config"]
 # arch and OS only: the SoC and device series of the iPadOS 17 port patch xnu-10063 and do not
 # apply to xnu-12377. The device adds its own 12377 patches deliberately.
 patch_series = ["arch:patches/xnu/series", "os:patches/xnu/series"]
@@ -64,32 +57,33 @@ loader = "payload"                  # not "firmware": unixnu.toml gets [[driver]
 title = "sirius iOS 26.5.2 bring-up: arm64 xnu-12377 kernel"
 dram_size = "0x17d6c0000"
 panic_screen = true
-# Bring-up probe without a console: the kernel waits this many seconds after the first call to
-# entry_probe_reset_after inside _arm_init and then resets through PSCI, so the phone returns to
-# fastboot on its own and the elapsed time reports how far the kernel got. The band probes of
-# the entry patch stay in the image.
-entry_probe_reset_delay = 8
-entry_probe_reset_after = "_PE_init_platform"
-# The OS profile's four fixups (a list here replaces the profile's), then one of this board's: without a
-# Metal device CoreImage falls back to OpenGL, whose dispatch table is empty here, and iconservicesagent
-# jumps to address 0 in CI::GLContext::init. The fifth entry replaces CoreUI's [CIContext
-# contextWithOptions:] call in +[CUIShapeEffectStack sharedCIContext] (0x1a31d7b84 unslid, a bl) with
-# mov x0, xzr: the shared context is nil, the glyph rasterizer returns no image and IconFoundation checks
-# for that (cbz x26), so a vector symbol draws empty instead of killing the agent.
-# text_fixups index the iPadOS 17 shared cache; the 23F84 fixups come from the lowering
-# pipeline (docs/PORT-ios26.md, P4).
+# Unattended bring-up: after drawing a panic, keep it on screen this long and then reset into
+# fastboot (the console writes the PMIC bootloader reason first). Long enough to photograph.
+panic_reset = 45
+# Bisection step 1: reset 10 s after _arm_init's serial_init returns. serial_init runs the board
+# console first, which maps the SPMI windows, so the stub's PMIC marker can run there; a return to
+# fastboot therefore proves both the console path and the bootloader reason. A stage-3 stub (reset
+# at the MMU enable, before arm_vm_init) cannot map anything and is deliberately not used.
+# No artificial stage-4 reset probe: let the kernel run until serial_init or panic_screen.
+entry_probe_reset_delay = 0
+# No text_fixups until generated against the exact lowered iPhone 23F84 cache.
 kernel_args = [
-  "-v", "serial=3", "debug=0x14e",           # console on the USB transport, kernel debug mask
+  "-v", "serial=3", "debug=0x14e", "-enable_kprintf_spam", # console on the USB transport, kernel debug mask
   "cpus=8", "sheng-smp=1",                   # ArmCpu claims every /cpus nub
   "armcpu-timer-intid=19",                   # SDM710 virtual timer is GIC PPI 3 (INTID 19)
   "armcpu-self-ipi=1",
-  # The iPadOS 17 arguments (sirius-emmc, offline-legacy-*, sheng-staged-apps, ...) name
-  # 10063 patches this kernel does not carry; each returns as its 12377 port lands.
+  "sirius_emmc_hs=3",                        # BoardStorage eMMC: card clock up to 100 MHz (1 = 25, 2 = 50,
+                                             # 3 = 100), each step proven against blocks read at 400 kHz
+  "sirius_emmc_win=1",                       # publish the read-only SHNGROOT windows of [userdata] for KDK APFS
+  "sirius-allow-unverified=1",               # authorize read-only SHNGROOT window in native_ufs_owner_root_authorized
+  "launchdsuffix=release",                   # DEVELOPMENT: exec /sbin/launchd directly and trace its errno
+  # The other iPadOS 17 arguments (offline-legacy-*, sheng-staged-apps, sirius-data-write, ...) name
+  # 10063 patches or paths this kernel does not carry; each returns as its 12377 port lands.
 ]
 
 [payload.adt]
-chip_id = "8011"
-root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
+# root_match_volume_uuid must come from the lowered iPhone 23F84 root image once written to userdata
+# (probed on hardware against the read-only 21H461 SHNGROOT OS window 04769D26-2CA0-4825-B443-E2E5F88300F2).
 owned_memory_size = "0xaa000000"
 
 [adt.chosen.bytes]
@@ -97,7 +91,10 @@ owned_memory_size = "0xaa000000"
 # controller) and size 0x100000, little-endian, so the console can map it and be the kernel's
 # transport after ExitBootServices.
 "unixnu,dwc3-console" = "0000600a000000000000100000000000"
-boot-manifest-hash = "5fd2fc139b688ddf071aa815c1ea75d26bcd994a528cf02e365661eab5139ec7b580d63ca9319e218962a2236f23faca"
+# The kernel's own stage markers (scripts/native-dwc3-console.c paint_stage) draw on this board's
+# framebuffer, the aperture DarwinBoot already validated: physical base, width, height, rowbytes.
+"unixnu,display" = "0000009c0000000038040000c0080000e0100000"
+# boot-manifest-hash is supplied only after verifying the new iPhone root/cache image pair.
 darwinboot-efi-map = "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 
 # Note: ephemeral-storage is intentionally NOT set in [adt.chosen.u32] so com.apple.datamigrator
@@ -108,10 +105,13 @@ darwinboot-efi-map = "0000000000000000000000000000000000000000000000000000000000
 # Force a valid QSCRATCH VBUS/session so the controller enumerates for the host; the console
 # requires the aperture above to be exactly 0x0a600000 when this is set.
 "unixnu,qcom-usb0" = 1
-# Bring-up probe: wait this long after the first PE_init_kprintf serial_init and then reset
-# through PSCI, so a boot without a console still reports how far the kernel got. Removed once
-# the console or a board driver carries the log.
-"unixnu,dwc3-probe-reset-ms" = 8000
+# SDM710 leaves USB to board code: power GCC and the QUSB2 PHY, select UTMI as the PIPE clock,
+# and install a direct SID 0x740 route in the apps SMMU before the DWC3 is touched.
+"unixnu,qcom-usb-board-init" = 1
+# A plain PSCI reset is a normal reboot here: the bootloader reads its reason from PM660
+# PON_SOFT_RB_SPARE. The console writes the fastboot reason before every reset it performs, so
+# bring-up loops come back to fastboot instead of booting the system again.
+"unixnu,qcom-reset" = 1
 
 [adt.product.string]
 model = "xiaomi,sirius"
@@ -122,6 +122,7 @@ thin-bezel = 1
 
 [adt.defaults.u32]
 sleep-disabled = 1                  # no suspend/resume on this board: do not let the CPU park forever
+"kern.maxvnodes" = 98755            # dram_size (0x17d6c0000) / 64 KiB + 1024, preventing lsd first-boot vnode exhaustion
 
 [adt.buttons.string]
 compatible = "buttons"

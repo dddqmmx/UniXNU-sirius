@@ -71,15 +71,16 @@ P4 用户态降级管线：把 zeta 的脚本泛化后移植（去掉 zeta/SM835
 
 P5 硬件验证：需要设备，按 porting 检查表逐步记录。
 
-## 需要决定的事
+## 已确定的选择（2026-11-06 更新）
 
-1. 目标身份用 iPadOS 26.5.2（`iPad17,3`，与 upstream 的 23F84 profile 一致）还是
-   zeta 的 iOS 26.5.2（`iPhone18,2`）。建议 iPadOS：sirius 现有整套用户态栈都是 iPadOS，
-   iPad 的 DeviceTree 依赖也更少。
-2. UniXNU 基线：继续在本地 `066c8d8` 上做 arm64 的 zeta 路线，还是先升到 upstream main。
-   建议前者（SDM710 无 PAC，upstream 的 arm64e 体系用不上），但升级能拿到更多通用工具。
-3. 存储：zeta 的 UFS 补丁与 `native-ufs-owner-root` 对 sirius 不适用，需要把
-   `NativeEmmc` 迁到 12377。
+1. **目标身份正式采用 iOS 26.5.2（`iPhone18,2` / `v54ap` / `23F84`）**，不再使用 iPadOS（`iPad17,3`）。
+   OS profile 为 `profiles/os/ios-26.5.2-23F84-arm64`，与 UniXNU-zeta 已验证的真机身份一致。
+2. **UniXNU 基线**：保持 `ios26` 分支的普通 ARM64 + 离线降级路线（SDM710 无 PAC，不能走 upstream
+   arm64e 路线），并同步 `build-xnu-12377.sh` 的 `XNU_APFS_CRYPTO_KPIS`、`XNU_APFS_MLDSA`、
+   `XNU_APFS_CSR`、`XNU_KDK_IOKIT_ABI`、`XNU_DYLD_FLAGS_BOOTARG`、`XNU_PROC_TRACE_CONSOLE`、
+   `XNU_EDT_FSTAB` 等开关。
+3. **存储**：zeta 的 UFS 补丁与 `native-ufs-owner-root` 对 sirius 不适用，必须把
+   `NativeEmmc`（SDCC1）与 KDK APFS 预链接迁到 12377。
 
 ## 未提交、未改动的部分
 

@@ -86,6 +86,9 @@ def main():
     parser.add_argument('--unixnu-efi', type=Path, required=True, help='UniXNU.efi (package/build.sh output)')
     parser.add_argument('--darwinboot-efi', type=Path, required=True, help='DarwinBoot.efi (scripts/build-darwinboot.sh output)')
     parser.add_argument('--marker', action='store_true', help='also write the BOOTUNIXNU marker that selects the UniXNU boot')
+    parser.add_argument('--no-prelinked-kexts', action='store_true',
+                        help='the payload kernel carries no prelinked Apple kexts (a board without a prelink step), '
+                             'so there is no AppleARMCPU personality to neutralise')
     parser.add_argument('--output', type=Path, default=None, help='copy the finished image here')
     args = parser.parse_args()
 
@@ -104,7 +107,10 @@ def main():
         (stage / 'EFI/UniXNU/BOOTUNIXNU').touch()
     run_mtool(['mcopy', '-i', str(image), '-s', '-o', '-Q', '-m', str(stage / 'EFI'), '::/'])
     shutil.rmtree(stage)
-    neutralize_apple_cpu(image)
+    if args.no_prelinked_kexts:
+        print('kernel without prelinked kexts: no AppleARMCPU personality to neutralise')
+    else:
+        neutralize_apple_cpu(image)
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

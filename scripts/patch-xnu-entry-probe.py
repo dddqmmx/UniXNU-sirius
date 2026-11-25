@@ -46,8 +46,13 @@ AFTER_MMU_VA = 0xFFFFFFF00B9D2350    # mov x0, #0x300000
 PANIC_VA = 0xFFFFFFF00BF69B04      # _panic
 VINFO_VA = 0xFFFFFFF00C0A2970      # _vinfo
 PANIC_CAVE_END = 0xFFFFFFF00B9D0FF0
-CAVE_SIZE = 0x60
-CAVES = {1: 0xFFFFFFF00B9D0500, 2: 0xFFFFFFF00B9D0560, 3: 0xFFFFFFF00B9D05C0, 4: 0xFFFFFFF00B9D0620}
+# The run after the entry caves is only ~0xa00 bytes, and a stage 4 reset stub takes 0x60
+# from it. The panic renderer is ~0xa00 bytes, so a second empty run before the reset vector
+# holds it when panic_screen and entry_probe_reset_after are used together.
+PANIC_CAVE_ALT = 0xFFFFFFF00B9CF254
+PANIC_CAVE_ALT_END = 0xFFFFFFF00B9D0000
+CAVE_SIZE = 0x80
+CAVES = {1: 0xFFFFFFF00B9D0500, 2: 0xFFFFFFF00B9D0580, 3: 0xFFFFFFF00B9D0600, 4: 0xFFFFFFF00B9D0680}
 TIMEBASE = 19200000
 
 PAINT = """
@@ -69,20 +74,42 @@ PAINT = """
   dsb sy
 """
 
+# Arm PM660 PON_SOFT_RB_SPARE (0x88f = 0x04, mode-bootloader) on SPMI channel 7 (0x0c670000)
+# while the MMU is still off at kernel entry, so any later PSCI SYSTEM_RESET lands in ABL fastboot
+# even before arm_vm_init or serial_init maps SPMI.
+PMIC_STAGE1_MARK = """  movz x4, #0x0000
+  movk x4, #0x0c67, lsl #16
+  str wzr, [x4, #0x04]
+  movz w5, #0x0004
+  str w5, [x4, #0x10]
+  dsb sy
+  movz w5, #0x08f0
+  str w5, [x4, #0x00]
+  dsb sy
+  movz w6, #0x8000
+2:
+  ldr w5, [x4, #0x08]
+  cbnz w5, 3f
+  subs w6, w6, #1
+  b.ne 2b
+3:
+"""
+
 SOURCES = {
-    1: ".text\n.global _start\n_start:\n" + PAINT.format(args='x0', band=1, lo='0x00FF', hi='0xFF00') + "  b target\n",
+    1: ".text\n.global _start\n_start:\n" + PAINT.format(args='x0', band=1, lo='0x00FF', hi='0xFF00')
+       + PMIC_STAGE1_MARK + "  b target\n",
     2: ".text\n.global _start\n_start:\n" + PAINT.format(args='x20', band=2, lo='0x00FF', hi='0xFFFF')
        + "  msr SCTLR_EL1, x0\n  b target\n",
     3: """.text
 .global _start
 _start:
   mov x0, #0x300000
-  mrs x1, cntpct_el0
+  mrs x1, cntvct_el0
   ldr x2, ={ticks}
   add x2, x1, x2
 1:
   isb
-  mrs x1, cntpct_el0
+  mrs x1, cntvct_el0
   cmp x1, x2
   b.lo 1b
   movz w0, #0x0009
@@ -99,12 +126,12 @@ _start:
 .global _start
 _start:
   bl callee
-  mrs x1, cntpct_el0
+  mrs x1, cntvct_el0
   ldr x2, ={ticks}
   add x2, x1, x2
 1:
   isb
-  mrs x1, cntpct_el0
+  mrs x1, cntvct_el0
   cmp x1, x2
   b.lo 1b
   movz w0, #0x0009
@@ -186,11 +213,14 @@ def assemble_c(source, va, workdir, symbols):
         # The board kit vendors the same header (build-boot-progress.py compiles against it), so a
         # payload build does not need a Mu-Silicium checkout.
         font_dir = next((p.parent for p in sorted((ROOT / 'kits').glob('*/Font.h'))), font_dir)
+    if not (font_dir / 'Font.h').is_file() and (ROOT / 'package/Font.h').is_file():
+        font_dir = ROOT / 'package'
     obj, elf, binary = (workdir / name for name in ('panic.o', 'panic.elf', 'panic.bin'))
     definitions = []
     for macro, name, width in (('MAX_MEM', '_max_mem', 8),
                                ('PAGE_TOTAL', '_vm_page_pages', 4),
-                               ('PAGE_FREE', '_vm_page_free_count', 4)):
+                               ('PAGE_FREE', '_vm_page_free_count', 4),
+                               ('BOOT_PT', '_bootstrap_pagetables', 8)):
         address = symbols.get(name)
         if address is None or address % width or not any(
                 base <= address and address + width <= base + size
@@ -218,6 +248,18 @@ def assemble_c(source, va, workdir, symbols):
             raise SystemExit('Invalid _boot_log_panic_flush')
         definitions.append(f'-DPANIC_FLUSH={flush:#x}UL')
     definitions.append(f'-DPANIC_RESET_S={PANIC_RESET_SECONDS}')
+    # A board whose bootloader reads its reason from the PMIC must write that marker before the
+    # reset, or the phone boots the system again instead of landing in fastboot. The routine is
+    # part of the board's console component, so it is only there when that component is linked.
+    marker = symbols.get('_unixnu_qcom_mark_bootloader_mapped')
+    if marker is not None and not any(base <= marker < base + size for base, size, _, _ in SEGMENTS):
+        raise SystemExit('Invalid _unixnu_qcom_mark_bootloader_mapped')
+    definitions.append(f'-DPANIC_RESET_MARK={marker or 0:#x}UL')
+    for macro, sym_name in (('DWC3_STAGE', '_unixnu_dwc3_stage'),
+                            ('DWC3_PUT', '_unixnu_dwc3_put'),
+                            ('DWC3_POLL', '_unixnu_dwc3_poll')):
+        sym_addr = symbols.get(sym_name, 0)
+        definitions.append(f'-D{macro}={sym_addr:#x}UL')
     print('panic screen:', 'flush' if flush is not None and PANIC_RESET_SECONDS else 'no flush', f'reset {PANIC_RESET_SECONDS}s' if PANIC_RESET_SECONDS else 'no reset')
     subprocess.run([clang, '--target=aarch64-none-elf', '-ffreestanding', '-fno-builtin', '-fno-stack-protector',
                     '-mgeneral-regs-only', '-fno-pic', '-mcmodel=tiny', '-Oz', f'-DVINFO={VINFO_VA:#x}UL',
@@ -305,7 +347,8 @@ def rebase(kernel, data):
     _panic and _vinfo come from the symbol table when the kernel has one (the plain source
     kernel does); the retained candidate layout is the unshifted case.
     """
-    global ENTRY_VA, START_FIRST_CPU, MMU_ENABLE_VA, AFTER_MMU_VA, PANIC_VA, VINFO_VA, PANIC_CAVE_END, CAVES
+    global ENTRY_VA, START_FIRST_CPU, MMU_ENABLE_VA, AFTER_MMU_VA, PANIC_VA, VINFO_VA
+    global PANIC_CAVE_END, PANIC_CAVE_ALT, PANIC_CAVE_ALT_END, CAVES
     delta = unixthread_pc(data) - ENTRY_VA
     if delta:
         ENTRY_VA += delta
@@ -313,6 +356,8 @@ def rebase(kernel, data):
         MMU_ENABLE_VA += delta
         AFTER_MMU_VA += delta
         PANIC_CAVE_END += delta
+        PANIC_CAVE_ALT += delta
+        PANIC_CAVE_ALT_END += delta
         CAVES = {stage: va + delta for stage, va in CAVES.items()}
         PANIC_VA += delta
         VINFO_VA += delta
@@ -407,6 +452,7 @@ def main():
             raise SystemExit(f'Padding at {va:#x} is not empty')
 
     # (site, cave stage, symbols the cave is linked with)
+    marker = kernel_symbols(args.kernel).get('_unixnu_qcom_mark_bootloader', 0)
     sites = [(ENTRY_VA, 1, {'target': START_FIRST_CPU}),
              (MMU_ENABLE_VA, 2, {'target': MMU_ENABLE_VA + 4})]
     if args.no_reset:
@@ -423,24 +469,47 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         for site, stage, symbols in sites:
             source = RESET_BEFORE if (stage == 4 and args.reset_before) else SOURCES[stage].format(ticks=TIMEBASE * args.reset_delay)
-            code = assemble(source, CAVES[stage], symbols, Path(tmp))
+            # The marker is a direct BL into the kernel's text: one instruction, and no literal
+            # pool inside a cave that is exactly as large as the stub.
+            source = source.replace('%MARK%', '  bl mark\n  ' if marker else '  ')
+            code = assemble(source, CAVES[stage], dict(symbols, **({'mark': marker} if marker else {})), Path(tmp))
             if len(code) > CAVE_SIZE:
                 raise SystemExit(f'Stage {stage} code is too large')
             data[file_offset(CAVES[stage]):file_offset(CAVES[stage]) + len(code)] = code
     for site, stage, _ in sites:
         struct.pack_into('<I', data, file_offset(site), branch(site, CAVES[stage]))
     if args.panic_screen:
-        # Right after the last probe cave in use, so the padding is shared as tightly as possible.
-        PANIC_CAVE = max(CAVES[stage] for _, stage, _ in sites) + CAVE_SIZE
-        if word(PANIC_VA) in (0, 0xFFFFFFFF) or any(data[file_offset(PANIC_CAVE):file_offset(PANIC_CAVE_END)]):
-            raise SystemExit('panic() or the panic screen padding is not as expected')
-        with tempfile.TemporaryDirectory() as tmp:
-            code, load, entry = assemble_c(ROOT / 'scripts/xnu-panic-screen.c', PANIC_CAVE, Path(tmp), kernel_names)
-            common_entry = panic_common_entry(Path(tmp), code, load)
-        if load + len(code) > PANIC_CAVE_END:
-            raise SystemExit(f'panic screen is {len(code):#x} bytes at {load:#x}, the padding ends at {PANIC_CAVE_END:#x}')
-        if any(data[file_offset(load):file_offset(load) + len(code)]):
-            raise SystemExit(f'Padding at {load:#x} is not empty')
+        if word(PANIC_VA) in (0, 0xFFFFFFFF):
+            raise SystemExit('panic() is not as expected')
+        # Prefer the padding immediately after the probe caves. A stage 4 reset stub can leave
+        # less room than the panic renderer needs, so fall back to the empty run before the
+        # reset vector. Both candidates are checked for emptiness before anything is linked.
+        post_entry_cave = max(CAVES[stage] for _, stage, _ in sites) + CAVE_SIZE
+        candidates = [(post_entry_cave, PANIC_CAVE_END),
+                      (PANIC_CAVE_ALT, PANIC_CAVE_ALT_END)]
+        chosen = None
+        failures = []
+        for panic_cave, panic_end in candidates:
+            while panic_cave < panic_end and word(panic_cave) != 0:
+                panic_cave += 4
+            panic_cave = (panic_cave + 7) & ~7
+            if panic_cave >= panic_end or any(data[file_offset(panic_cave):file_offset(panic_end)]):
+                failures.append(f'{panic_cave:#x}: not empty')
+                continue
+            with tempfile.TemporaryDirectory() as tmp:
+                code, load, entry = assemble_c(ROOT / 'scripts/xnu-panic-screen.c', panic_cave, Path(tmp), kernel_names)
+                common_entry = panic_common_entry(Path(tmp), code, load)
+            if load < panic_cave or load + len(code) > panic_end:
+                failures.append(f'{panic_cave:#x}: {len(code):#x} bytes do not fit before {panic_end:#x}')
+                continue
+            if any(data[file_offset(load):file_offset(load) + len(code)]):
+                failures.append(f'{load:#x}: linked load address is not empty')
+                continue
+            chosen = (code, load, entry, common_entry)
+            break
+        if chosen is None:
+            raise SystemExit('panic screen has no empty cave: ' + '; '.join(failures))
+        code, load, entry, common_entry = chosen
         data[file_offset(load):file_offset(load) + len(code)] = code
         struct.pack_into('<I', data, file_offset(PANIC_VA), branch(PANIC_VA, entry))
         common = kernel_names.get('_panic_trap_to_debugger')

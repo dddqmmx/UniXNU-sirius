@@ -1,17 +1,10 @@
-/* Draw a kernel panic message, with its arguments, on the frame buffer, then stop.
+/* Draw a kernel panic message, with its arguments, on the frame buffer in RED, then reset.
  *
- * Built freestanding by patch-xnu-entry-probe.py and placed in unused padding
- * of a COPY of the kernel; panic() and its common panic funnel are redirected
- * here. It runs on the kernel's
- * own mapping of the frame buffer. With the board observer it uses the retained
- * GOP mapping prefix; otherwise it uses vinfo.v_baseaddr.
- *
- * panic(fmt, ...) is variadic and the Darwin arm64 ABI passes every variadic
- * argument in an 8-byte stack slot, starting at the stack pointer on entry.
- * A small printf walks the format string over those slots (%s %x %p, with
- * 0-flag, width, precision and l/ll/z). Kernel strings are checked with an
- * active hardware translation query before reading each byte;
- * unmapped/device/user pointers print as pointers. VINFO names that mapping prefix.
+ * Works both after PE_create_console() (when vinfo.v_baseaddr is mapped) and during early boot
+ * before arm_vm_init / PE_create_console(): the message and call stack are formatted into a
+ * stack buffer while the MMU is on, cleaned to PoC, and rendered either through vinfo.v_baseaddr
+ * or by jumping to the 1:1 physical identity mapping in _bootstrap_pagetables, turning the MMU
+ * off, and writing directly to the physical framebuffer at 0x9c000000.
  */
 typedef unsigned long u64;
 typedef unsigned int u32;
@@ -22,17 +15,21 @@ struct vc_info {
   u64 v_baseaddr;
 };
 
-#define SCALE   3
+#define SCALE       3
+#define COLOR_RED   0xFFFF0000u
+#define FB_PHYS     0x9c000000UL
+#define FB_WIDTH    1080u
+#define FB_HEIGHT   2240u
+#define FB_ROWBYTES 4320u
+#define MSG_CAP     640u
 
 extern const u64 gFont[];
 
-/* All state lives on the stack: this code sits in the kernel's read-only text,
- * so a writable global would fault on its first store. */
-struct ctx {
-  u8  *base;
-  u32 rb, w, h, x, y;
-  u8  *log;   /* kernel buffer that also receives the formatted message (PANIC_TEXT), 0 = none */
-  u32 logn;
+struct buf_ctx {
+  char buf[MSG_CAP];
+  u32  len;
+  u8  *log;
+  u32  logn;
 };
 
 #ifndef PANIC_TEXT
@@ -47,53 +44,25 @@ __attribute__((noreturn)) static void park (void)
   }
 }
 
-static void put (struct ctx *g, u8 c)
+__attribute__((noinline)) static void put (struct buf_ctx *g, u8 c)
 {
-  const u32 cell = 6 * SCALE, line = 14 * SCALE;
-  u32 row, col, dy, dx;
-
   if (g->log && g->logn < PANIC_TEXT_BYTES - 1 && c >= 9 && c <= 126) {
     g->log[g->logn++] = (c < 32) ? ' ' : c;
     g->log[g->logn] = 0;
   }
-
-  if (c == '\n') {
-    g->x = 0;
-    g->y += line;
-    return;
+  if (g->len + 1 < MSG_CAP) {
+    g->buf[g->len++] = (char)c;
+    g->buf[g->len] = 0;
   }
-  if (c == '\t') {
-    g->x += 4 * cell;
-    return;
+#if defined(DWC3_STAGE) && DWC3_STAGE && defined(DWC3_PUT) && DWC3_PUT
+  if (*(volatile const u32 *)DWC3_STAGE >= 5) {
+    if (c == '\n') ((void (*)(u8))(u64)DWC3_PUT)('\r');
+    ((void (*)(u8))(u64)DWC3_PUT)(c);
   }
-  if (c < 32 || c > 126) {
-    return;
-  }
-  if (g->x + cell > g->w) {
-    g->x = 0;
-    g->y += line;
-  }
-  if (g->y + line > g->h) {
-    return;
-  }
-  u64 glyph = gFont[c - 32];
-  u32 top = (u32)(glyph >> 32), bottom = (u32)glyph;
-  for (row = 0; row < 12; row++) {
-    u32 data = (row < 6) ? (top >> (row * 5)) : (bottom >> ((row - 6) * 5));
-    for (col = 0; col < 5; col++) {
-      if ((data >> col) & 1) {
-        for (dy = 0; dy < SCALE; dy++) {
-          for (dx = 0; dx < SCALE; dx++) {
-            *(volatile u32 *)(g->base + (u64)(g->y + row * SCALE + dy) * g->rb + (u64)(g->x + col * SCALE + dx) * 4) = 0xFFFFFFFFu;
-          }
-        }
-      }
-    }
-  }
-  g->x += cell;
+#endif
 }
 
-static void number (struct ctx *g, u64 value, u32 base, u32 width, int zero)
+__attribute__((noinline)) static void number (struct buf_ctx *g, u64 value, u32 base, u32 width, int zero)
 {
   u8  digits[24];
   u32 n = 0, i;
@@ -111,10 +80,6 @@ static void number (struct ctx *g, u64 value, u32 base, u32 width, int zero)
   }
 }
 
-/* Probe each string byte before dereferencing it. Heap strings (process name
- * and exit reason) live outside the linked image. AT performs a hardware
- * translation query only: no table edits, mappings, or exception bypass.
- * Refuse user pointers, translation faults and device-memory attributes. */
 static int readable (const char *s, const u64 *args)
 {
   u64 a = (u64)s, par;
@@ -124,10 +89,34 @@ static int readable (const char *s, const u64 *args)
   return !(par & 1) && ((par >> 60) != 0);
 }
 
-static void format (struct ctx *g, const char *fmt, const u64 *args)
+static u64 va_to_pa (u64 va)
+{
+  u64 par;
+  __asm__ volatile ("at s1e1r, %1\n\tisb\n\tmrs %0, par_el1" : "=r" (par) : "r" (va) : "memory");
+  if (par & 1) return 0;
+  return (par & 0x0000fffffffff000UL) | (va & 0xfffUL);
+}
+
+static void clean_poc (const void *addr, u64 bytes)
+{
+  u64 p = (u64)addr & ~63UL;
+  u64 end = (u64)addr + bytes;
+  for (; p < end; p += 64) {
+    __asm__ volatile ("dc civac, %0" :: "r" (p) : "memory");
+  }
+  __asm__ volatile ("dsb sy" ::: "memory");
+}
+
+static void format (struct buf_ctx *g, const char *fmt, const u64 *args)
 {
   u32 i, used = 0;
 
+  if (!readable(fmt, args)) {
+    put(g, '<');
+    number(g, (u64)fmt, 16, 16, 1);
+    put(g, '>');
+    return;
+  }
   for (i = 0; i < 2000 && fmt[i]; i++) {
     u8 c = (u8)fmt[i];
     if (c != '%') {
@@ -195,18 +184,20 @@ static void format (struct ctx *g, const char *fmt, const u64 *args)
       put (g, '0');
       put (g, 'x');
       number (g, v, 16, width, zero);
+    } else if (c == 'c') {
+      put (g, (u8)(v & 0xff));
     }
   }
 }
 
-static void text (struct ctx *g, const char *s)
+__attribute__((noinline)) static void text (struct buf_ctx *g, const char *s)
 {
   while (*s) {
     put (g, (u8)*s++);
   }
 }
 
-static void hex (struct ctx *g, const char *label, u64 v)
+__attribute__((noinline)) static void hex (struct buf_ctx *g, const char *label, u64 v)
 {
   text (g, label);
   put (g, '0');
@@ -214,92 +205,221 @@ static void hex (struct ctx *g, const char *label, u64 v)
   number (g, v, 16, 16, 1);
 }
 
-/* x0 = fmt as for panic(); x1 is set by the stub to the entry stack pointer. */
-__attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main (const char *fmt, const u64 *args)
+__attribute__((noinline)) static void render_buffer (u8 *base, u32 w, u32 h, u32 rb, const char *msg, const u64 *font)
 {
-  volatile struct vc_info *v = (volatile struct vc_info *)VINFO;
-  struct ctx g;
-  u32 row, col;
+  const u32 cell = 6 * SCALE, line = 14 * SCALE;
+  u32 x = 16, y = h / 8;
+  u32 row, col, dy, dx, i;
 
-  __asm__ volatile ("msr daifset, #15");
-#ifdef REFRESH
-  /* The panel's monitor thread draws its first frame early and then sleeps on the timer that
-   * ArmCpu owns; redraw now so the TOPO/PROBE rows show the probe state at panic time. The rows
-   * sit above h/8, so the clear below leaves them readable. */
-  if (REFRESH) {
-    ((void (*)(void))(u64)REFRESH)();
-  }
-#endif
-  g.base = (u8 *)v->v_baseaddr;
-  g.rb   = v->v_rowbytes;
-  g.w    = v->v_width;
-  g.h    = v->v_height;
-  if (g.base == 0 || v->v_depth != 32 || fmt == 0) {
-    park ();
-  }
-
-  /* First panic wins: a marker in the last row's first two pixels means a panic already drew
-   * the screen; a later panic (another thread or exception) must not overwrite it. */
-  volatile u32 *mark = (volatile u32 *)(g.base + (u64)(g.h - 1) * g.rb);
+  volatile u32 *mark = (volatile u32 *)(base + (u64)(h - 1) * rb);
   if (mark[0] == 0xC0FFEE11u && mark[1] == 0x5CEEDA7Au) {
-    park ();
+    return;
   }
-  g.x = 0;
-  g.y = g.h / 8;
-  g.log = 0;
-  g.logn = 0;
-  for (row = g.y; row < g.h; row++) {
-    for (col = 0; col < g.w; col++) {
-      *(volatile u32 *)(g.base + (u64)row * g.rb + (u64)col * 4) = 0;
+  for (row = y; row < h; row++) {
+    for (col = 0; col < w; col++) {
+      *(volatile u32 *)(base + (u64)row * rb + (u64)col * 4) = 0;
     }
   }
-  g.y += 8;
-  /* The board's live banner keeps showing this text after the next swap paints over the screen (BootProgress.c,
-   * boot_progress_panic_text). The first panic's text is kept: a buffer that already holds one is left alone. */
-  if (PANIC_TEXT && *(volatile u8 *)PANIC_TEXT == 0) {
-    g.log = (u8 *)PANIC_TEXT;
+  y += 8;
+  for (i = 0; i < MSG_CAP && msg[i]; i++) {
+    u8 c = (u8)msg[i];
+    if (c == '\n') {
+      x = 16;
+      y += line;
+      continue;
+    }
+    if (c == '\t') {
+      x += 4 * cell;
+      continue;
+    }
+    if (c < 32 || c > 126) {
+      continue;
+    }
+    if (x + cell > w - 16) {
+      x = 16;
+      y += line;
+    }
+    if (y + line > h) {
+      break;
+    }
+    u64 glyph = font[c - 32];
+    u32 top = (u32)(glyph >> 32), bottom = (u32)glyph;
+    for (row = 0; row < 12; row++) {
+      u32 data = (row < 6) ? (top >> (row * 5)) : (bottom >> ((row - 6) * 5));
+      for (col = 0; col < 5; col++) {
+        if ((data >> col) & 1) {
+          for (dy = 0; dy < SCALE; dy++) {
+            for (dx = 0; dx < SCALE; dx++) {
+              *(volatile u32 *)(base + (u64)(y + row * SCALE + dy) * rb + (u64)(x + col * SCALE + dx) * 4) = COLOR_RED;
+            }
+          }
+        }
+      }
+    }
+    x += cell;
   }
-  format (&g, fmt, args);
-  g.log = 0;
-  __asm__ volatile ("dsb sy");
-  /* Sample the active CPU translation regime, without changing it. This is
-   * panic-time evidence only; it does not establish early mappings or EL0 ABI. */
-  {
-    u64 tcr, sctlr;
-    __asm__ volatile ("mrs %0, tcr_el1" : "=r" (tcr));
-    __asm__ volatile ("mrs %0, sctlr_el1" : "=r" (sctlr));
-    hex (&g, "\nTCR=", tcr);
-    hex (&g, "\nSCTLR=", sctlr);
-  }
-  /* Resolved from this candidate's symbols by the patcher, never fixed addresses.
-   * Values are sampled at panic time and need not form an atomic VM snapshot. */
-  (void)MAX_MEM;
-  hex (&g, "\npages=", *(volatile const u32 *)PAGE_TOTAL);
-  hex (&g, "\nfree=", *(volatile const u32 *)PAGE_FREE);
-  /* The raw argument slots are not dumped: the formatted message above already carries them (room for the PANIC_TEXT copy). */
   mark[0] = 0xC0FFEE11u;
   mark[1] = 0x5CEEDA7Au;
-  __asm__ volatile ("dsb sy");
-#ifdef PANIC_FLUSH
-  /* fajita: write the panic text and the message buffer to the UFS log (BootLog.c boot_log_panic_flush, lock-free). */
-  ((void (*)(void))PANIC_FLUSH) ();
-#endif
-#if defined(PANIC_RESET_S) && PANIC_RESET_S
-  /* fajita: unattended runs must come back. Leave the message on screen for PANIC_RESET_S seconds (the counter runs with
-   * interrupts masked), then PSCI SYSTEM_RESET; with empty boot slots the ABL lands in fastboot. */
-  {
+  __asm__ volatile ("dsb sy" ::: "memory");
+}
+
+__attribute__((noinline, noreturn)) static void psci_reset_or_park (u64 wait_s, void (*poll)(void), u64 mark_fn)
+{
+  if (wait_s) {
     u64 freq, start, now;
     __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (freq));
     __asm__ volatile ("isb\n\tmrs %0, cntvct_el0" : "=r" (start));
     if (!freq) freq = 19200000;
     do {
+      if (poll) poll();
       __asm__ volatile ("isb\n\tmrs %0, cntvct_el0" : "=r" (now));
-    } while (now - start < (u64)PANIC_RESET_S * freq);
+    } while (now - start < wait_s * freq);
+    if (mark_fn) ((int (*)(void))mark_fn)();
     register u64 x0 __asm__ ("x0") = 0x84000009UL;
     __asm__ volatile ("smc #0" : "+r" (x0) :: "memory", "x1", "x2", "x3");
   }
+  park();
+}
+
+__attribute__((noinline, noreturn)) static void mmu_off_render_and_reset (
+    u64 boot_pt_pa, u64 self_pa, u64 sp_pa, u64 msg_pa, u64 font_pa, u64 wait_s)
+{
+  __asm__ volatile (
+    "msr ttbr0_el1, %0\n\t"
+    "isb\n\t"
+    "tlbi vmalle1\n\t"
+    "dsb ish\n\t"
+    "isb\n\t"
+    "adr x9, 1f\n\t"
+    "and x9, x9, #0xfff\n\t"
+    "bic %1, %1, #0xfff\n\t"
+    "add x9, %1, x9\n\t"
+    "br x9\n\t"
+    "1:\n\t"
+    "mov sp, %2\n\t"
+    "mrs x9, sctlr_el1\n\t"
+    "bic x9, x9, #1\n\t"
+    "bic x9, x9, #(1 << 2)\n\t"
+    "msr sctlr_el1, x9\n\t"
+    "isb\n\t"
+    : "+r" (boot_pt_pa), "+r" (self_pa), "+r" (sp_pa)
+    :
+    : "x9", "memory"
+  );
+  render_buffer((u8 *)FB_PHYS, FB_WIDTH, FB_HEIGHT, FB_ROWBYTES, (const char *)msg_pa, (const u64 *)font_pa);
+  psci_reset_or_park(wait_s, 0, 0);
+}
+
+/* x0 = fmt as for panic(); x1 is set by the stub to the entry stack pointer. */
+__attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main (const char *fmt, const u64 *args)
+{
+  volatile struct vc_info *v = (volatile struct vc_info *)VINFO;
+  struct buf_ctx g __attribute__((aligned(64)));
+
+  __asm__ volatile ("msr daifset, #15");
+#ifdef REFRESH
+  if (REFRESH) {
+    ((void (*)(void))(u64)REFRESH)();
+  }
 #endif
-  park ();
+  g.len = 0;
+  g.buf[0] = 0;
+  g.log = 0;
+  g.logn = 0;
+  if (PANIC_TEXT && *(volatile u8 *)PANIC_TEXT == 0) {
+    g.log = (u8 *)PANIC_TEXT;
+  }
+  text(&g, "PANIC: ");
+  if (fmt) {
+    format(&g, fmt, args);
+  }
+  g.log = 0;
+
+  /* Walk up to 6 stack frames while MMU is on so the exact panic caller in _arm_init is shown. */
+  {
+    u64 fp = (u64)__builtin_frame_address(0);
+    u64 lr = (u64)__builtin_return_address(0);
+    hex(&g, "\nLR0=", lr);
+    for (int depth = 1; depth <= 5; depth++) {
+      if (!readable((const char *)fp, args)) {
+        break;
+      }
+      u64 next_fp = *(const volatile u64 *)fp;
+      if (!next_fp || next_fp == fp || (next_fp & 0xf)) {
+        break;
+      }
+      fp = next_fp;
+      if (!readable((const char *)fp, args) || !readable((const char *)(fp + 8), args)) {
+        break;
+      }
+      u64 next_lr = *(const volatile u64 *)(fp + 8);
+      text(&g, "\nLR");
+      put(&g, (u8)('0' + depth));
+      hex(&g, "=", next_lr);
+    }
+  }
+  {
+    u64 esr, elr, far;
+    __asm__ volatile ("mrs %0, esr_el1" : "=r" (esr));
+    __asm__ volatile ("mrs %0, elr_el1" : "=r" (elr));
+    __asm__ volatile ("mrs %0, far_el1" : "=r" (far));
+    hex(&g, "\nESR=", esr);
+    hex(&g, "\nELR=", elr);
+    hex(&g, "\nFAR=", far);
+  }
+  (void)MAX_MEM;
+  (void)PAGE_TOTAL;
+  (void)PAGE_FREE;
+
+  void (*dwc3_poll)(void) = 0;
+#if defined(DWC3_STAGE) && DWC3_STAGE && defined(DWC3_POLL) && DWC3_POLL
+  if (*(volatile const u32 *)DWC3_STAGE >= 5) {
+    dwc3_poll = (void (*)(void))(u64)DWC3_POLL;
+  }
+#endif
+
+  if (v->v_baseaddr != 0 && v->v_depth == 32) {
+    render_buffer((u8 *)v->v_baseaddr, v->v_width, v->v_height, v->v_rowbytes, g.buf, gFont);
+#ifdef PANIC_FLUSH
+    ((void (*)(void))PANIC_FLUSH)();
+#endif
+    psci_reset_or_park(
+#if defined(PANIC_RESET_S) && PANIC_RESET_S
+      (u64)PANIC_RESET_S,
+#else
+      0ULL,
+#endif
+      dwc3_poll,
+#if defined(PANIC_RESET_MARK) && PANIC_RESET_MARK
+      (u64)PANIC_RESET_MARK
+#else
+      0ULL
+#endif
+    );
+  }
+
+  /* Early panic before PE_create_console() mapped vinfo.v_baseaddr: clean the formatted
+   * buffer and font to physical DRAM, switch to the 1:1 bootstrap identity map, disable
+   * the MMU, and draw the red text directly onto the physical framebuffer at 0x9c000000. */
+  clean_poc(&g, sizeof(g));
+  clean_poc(gFont, 96 * sizeof(u64));
+  {
+    u64 boot_pt_pa = va_to_pa((u64)BOOT_PT);
+    u64 self_pa = va_to_pa((u64)&mmu_off_render_and_reset);
+    u64 sp_pa = va_to_pa((u64)&g);
+    u64 msg_pa = va_to_pa((u64)g.buf);
+    u64 font_pa = va_to_pa((u64)gFont);
+    if (boot_pt_pa && self_pa && sp_pa && msg_pa && font_pa) {
+      mmu_off_render_and_reset(boot_pt_pa, self_pa, sp_pa & ~15UL, msg_pa, font_pa,
+#if defined(PANIC_RESET_S) && PANIC_RESET_S
+                               (u64)PANIC_RESET_S
+#else
+                               0ULL
+#endif
+      );
+    }
+  }
+  park();
 }
 
 /* Entry from panic(): keep the stack pointer, which addresses the variadic arguments. */
@@ -310,8 +430,6 @@ __attribute__((naked, noreturn, section(".text.a_entry"))) void panic_screen (co
 
 /* The real panic_trap_to_debugger signature takes (fmt, va_list *, ...).
  * Darwin ARM64 va_list is a stack pointer; its address is passed in x1.
- * The wrapper has already established its frame, so SP is NOT the argument
- * list here. Follow exactly the one pointer supplied by the real wrapper.
  */
 __attribute__((naked, noreturn, section(".text.a_common"))) void panic_screen_common (void)
 {

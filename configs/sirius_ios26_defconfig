@@ -2,7 +2,7 @@
 # kernel built as ordinary ARM64 from patches/xnu-12377.
 #
 # Layer order: arch:configs/common.config (profiles/arch/arm64-ios26), soc:configs/sdm710.config,
-# os:configs/ipados.config, then this file. Only scripts/build-xnu-12377.sh reads these options;
+# os:configs/ios.config, then this file. Only scripts/build-xnu-12377.sh reads these options;
 # the xnu-10063 options of configs/sirius_defconfig (CONFIG_XNU_OWNER_*, CONFIG_XNU_NATIVE_UFS,
 # CONFIG_XNU_CRYPTO_BOOTSTRAP, ...) do not apply here.
 
@@ -25,8 +25,14 @@ CONFIG_XNU_ARMCPU=y
 CONFIG_XNU_NATIVE_PAN=y
 # The panic region comes from the device tree instead of the Raspberry Pi address.
 CONFIG_XNU_DT_PANIC_REGION=y
-# Off until the 23F84 trust cache is built: there is nothing to load yet.
-CONFIG_XNU_TRUST_CACHE_RUNTIME=n
+# Initialize the trust cache runtime (_trust_cache_rt_lock) now that KDK AppleImage4 and AMFI are
+# prelinked into the security-extension pass.
+CONFIG_XNU_TRUST_CACHE_RUNTIME=y
+# Commpage dyld_flags hook and early process/exception console tracing for userland bring-up.
+CONFIG_XNU_DYLD_FLAGS_BOOTARG=y
+CONFIG_XNU_PROC_TRACE_CONSOLE=y
+# APFS SHA3 / digest-pair KPIs in the source crypto provider (kept ready for KDK APFS prelink).
+CONFIG_XNU_APFS_CRYPTO_KPIS=y
 
 # Kernel output after ExitBootServices: the polling DWC3 CDC-ACM console of
 # scripts/native-dwc3-console.c (the SoC's USB3 controller is at 0xa600000, the aperture the ADT
@@ -37,3 +43,17 @@ CONFIG_XNU_NATIVE_DWC3_CONSOLE=y
 # writes CNTP_CTL_EL0 and the write faults on the boot core (the same failure UniXNU-zeta hit on
 # SM8350). Keep the virtual timer and omit that write.
 CONFIG_XNU_VIRTUAL_TIMER_ONLY=y
+# Storage: the public IOStorageFamily and the SDCC1 eMMC driver of the iPadOS 17 port, linked into the
+# kernel by scripts/build-board-storage-12377.py (BoardStorage -> NativeEmmc -> IOBlockStorageDevice).
+# Read-only: the 12377 build leaves out the persistent Data window.
+CONFIG_XNU_BOARD_STORAGE=y
+# KDK 25F84 APFS/AMFI/Zlib prelink profile: whole-kernel C++ vtable reserved slots, public OSX storage
+# virtuals, CSR policy, ML-DSA KPIs, /filesystems/fstab sysctl and iOS class aliases.
+CONFIG_XNU_KDK_IOKIT_ABI=y
+CONFIG_XNU_APFS_CSR=y
+CONFIG_XNU_APFS_MLDSA=y
+CONFIG_XNU_EDT_FSTAB=y
+CONFIG_XNU_NATIVE_IOS_CLASS_ALIASES=y
+# Read-only root-authentication bridge in bsd_init (native-ufs-owner-root.patch), backed by
+# NativeEmmc::hasReadOnlyWindow under sirius-allow-unverified=1.
+CONFIG_XNU_NATIVE_UFS_OWNER_ROOT=y
